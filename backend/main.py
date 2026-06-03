@@ -1684,7 +1684,7 @@ async def readiness_check():
 async def fonts(path: str):
     """Serve font files with long-term caching for optimal performance"""
     try:
-        font_path = os.path.join("static", "fonts", path)
+        font_path = os.path.join(BACKEND_DIR, "static", "fonts", path)
         if not os.path.exists(font_path):
             raise HTTPException(status_code=404, detail="Font file not found")
         
