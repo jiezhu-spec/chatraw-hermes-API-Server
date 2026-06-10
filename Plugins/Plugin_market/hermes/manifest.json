@@ -1,0 +1,88 @@
+{
+  "id": "hermes",
+  "version": "1.2.0",
+  "name": {
+    "en": "Hermes Router",
+    "zh": "Hermes 路由"
+  },
+  "description": {
+    "en": "Route selected ChatRaw messages to a local Hermes API server through the secure host bridge.",
+    "zh": "通过安全宿主桥接，将选定的 ChatRaw 消息路由到本机 Hermes API Server。"
+  },
+  "author": "ChatRaw",
+  "homepage": "https://github.com/massif-01/ChatRaw",
+  "icon": "icon.png",
+  "main": "main.js",
+  "type": "message_router",
+  "hooks": ["route_message", "custom_settings"],
+  "customSettings": true,
+  "settings": [
+    {
+      "id": "baseUrl",
+      "type": "string",
+      "label": {
+        "en": "Hermes base URL",
+        "zh": "Hermes 基础 URL"
+      },
+      "default": "http://127.0.0.1:8642/v1"
+    },
+    {
+      "id": "model",
+      "type": "string",
+      "label": {
+        "en": "Model name",
+        "zh": "模型名称"
+      },
+      "default": "hermes-agent"
+    },
+    {
+      "id": "apiMode",
+      "type": "select",
+      "label": {
+        "en": "Execution mode",
+        "zh": "执行模式"
+      },
+      "default": "chat_completions",
+      "options": [
+        {
+          "value": "chat_completions",
+          "label": {
+            "en": "Chat Completions",
+            "zh": "Chat Completions"
+          }
+        },
+        {
+          "value": "runs",
+          "label": {
+            "en": "Runs",
+            "zh": "Runs"
+          }
+        }
+      ]
+    }
+  ],
+  "proxy": [
+    {
+      "id": "hermes",
+      "name": {
+        "en": "Hermes API Server Key",
+        "zh": "Hermes API Server Key"
+      },
+      "description": {
+        "en": "API_SERVER_KEY used by the local Hermes API server.",
+        "zh": "本机 Hermes API Server 使用的 API_SERVER_KEY。"
+      }
+    },
+    {
+      "id": "hermes-session-key",
+      "name": {
+        "en": "Hermes Session Key",
+        "zh": "Hermes Session Key"
+      },
+      "description": {
+        "en": "Optional key sent by the backend as X-Hermes-Session-Key for Hermes session isolation.",
+        "zh": "后端可选发送为 X-Hermes-Session-Key，用于 Hermes session 隔离。"
+      }
+    }
+  ]
+}

@@ -110,6 +110,7 @@ ChatRaw features a complete **plugin system** to extend functionality:
 - **Markdown Renderer Plus** — Math (KaTeX), Mermaid, code copy, offline
 - **Context Compressor** — Compact older chat history automatically or from the input toolbar
 - **Skill Manager** — Install Agent Skills from GitHub or local files and activate them inline with `/skill-name`
+- **Hermes Router** — Route selected messages to a local Hermes API Server through the secure backend bridge
 - **Toolbar Extension Demo** — Demo plugin showcasing UI Extension API
 
 ### Toolbar Extension
@@ -122,6 +123,8 @@ ChatRaw features a complete **plugin system** to extend functionality:
 - One-click packaging and distribution
 
 **Plugin Development Guide**: [Plugins/README.md](Plugins/README.md)
+
+**Hermes Router Guide**: [docs/hermes.md](docs/hermes.md)
 
 ---
 
@@ -485,6 +488,7 @@ ChatRaw 拥有完整的**插件系统**以扩展功能：
 - **Markdown 渲染增强** — 数学公式、Mermaid、代码复制，离线可用
 - **上下文压缩** — 自动或通过输入框工具栏压缩较早聊天历史
 - **Skill 管理器** — 从 GitHub 或本地文件安装 Agent Skills，并用 `/skill-name` 在输入框内联激活
+- **Hermes Router** — 通过安全后端桥接，将选定消息路由到本机 Hermes API Server
 - **工具栏扩展演示** — 展示 UI 扩展 API 的演示插件
 
 ### 工具栏扩展
@@ -497,6 +501,8 @@ ChatRaw 拥有完整的**插件系统**以扩展功能：
 - 一键打包分发
 
 **插件开发指南**: [Plugins/README.md](Plugins/README.md)
+
+**Hermes Router 指南**: [docs/hermes.md](docs/hermes.md)
 
 ---
 
