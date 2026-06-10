@@ -9,6 +9,7 @@ import json
 import uuid
 import asyncio
 import aiohttp
+import codecs
 import io
 import struct
 import logging
@@ -19,6 +20,7 @@ import re
 import threading
 import tempfile
 import zipfile
+import ipaddress
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Optional, List, AsyncGenerator, Dict, Any, Tuple
@@ -520,6 +522,13 @@ class Database:
         _context_compaction_locks.pop(chat_id, None)
     
     # Messages
+    def chat_exists(self, chat_id: str) -> bool:
+        if not chat_id:
+            return False
+        cursor = self.get_conn().cursor()
+        cursor.execute("SELECT 1 FROM chats WHERE id = ? LIMIT 1", (chat_id,))
+        return cursor.fetchone() is not None
+
     def get_messages(self, chat_id: str) -> List[Message]:
         cursor = self.get_conn().cursor()
         cursor.execute("SELECT * FROM messages WHERE chat_id = ? ORDER BY created_at ASC", (chat_id,))
@@ -1131,35 +1140,35 @@ class LLMService:
                 }
 
         return result
-    
-    async def chat_stream(self, chat_id: str, message: str, use_rag: bool = False, use_thinking: bool = False, image_base64: str = "", web_content: str = "", web_url: str = "", effective_system_prompt: Optional[str] = None) -> AsyncGenerator[str, None]:
-        """Stream chat responses with optional thinking/reasoning support"""
-        config = self.db.get_model_by_type("chat")
-        if not config or not config.api_url or not config.model_id:
-            yield json.dumps({"error": "Chat model not configured"})
-            return
-        
+
+    async def build_chat_completion_messages(
+        self,
+        chat_id: str,
+        message: str,
+        use_rag: bool = False,
+        image_base64: str = "",
+        effective_system_prompt: Optional[str] = None,
+        include_image: bool = False,
+    ) -> Tuple[List[dict], List[dict]]:
         settings = self.db.get_settings()
-        
         compressor_config = get_context_compressor_config()
         messages = self.build_history_messages(
             chat_id,
             use_compaction=compressor_config["enabled"],
             system_prompt=effective_system_prompt if effective_system_prompt is not None else settings.chat_settings.system_prompt,
         )
-        
-        # RAG context and references
+
         rag_context = ""
         rag_references = []
         if use_rag:
             rag_context, rag_references = await self.build_rag_context(message)
-        
+
         # User message is already in history (saved with web_content). Only add RAG to last message if needed.
         if rag_context and messages and messages[-1].get("role") == "user":
             messages[-1] = {"role": "user", "content": f"{rag_context}User question: {messages[-1]['content']}"}
-        
-        # For vision: replace last user message with multimodal format (text + image)
-        if image_base64 and config.capability.vision and messages and messages[-1].get("role") == "user":
+
+        # For vision: replace last user message with multimodal format (text + image).
+        if image_base64 and include_image and messages and messages[-1].get("role") == "user":
             text_content = messages[-1]["content"]
             messages[-1] = {
                 "role": "user",
@@ -1168,6 +1177,26 @@ class LLMService:
                     {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_base64}"}}
                 ]
             }
+
+        return messages, rag_references
+
+    async def chat_stream(self, chat_id: str, message: str, use_rag: bool = False, use_thinking: bool = False, image_base64: str = "", web_content: str = "", web_url: str = "", effective_system_prompt: Optional[str] = None) -> AsyncGenerator[str, None]:
+        """Stream chat responses with optional thinking/reasoning support"""
+        config = self.db.get_model_by_type("chat")
+        if not config or not config.api_url or not config.model_id:
+            yield json.dumps({"error": "Chat model not configured"})
+            return
+
+        settings = self.db.get_settings()
+
+        messages, rag_references = await self.build_chat_completion_messages(
+            chat_id,
+            message,
+            use_rag,
+            image_base64,
+            effective_system_prompt,
+            include_image=bool(config.capability.vision),
+        )
         
         # API request
         url = config.api_url.rstrip("/") + "/chat/completions"
@@ -1241,18 +1270,8 @@ class LLMService:
                             except json.JSONDecodeError:
                                 continue
             
-            # Save response (include thinking in saved message if present)
             if full_response:
-                save_content = full_response
-                if full_thinking:
-                    save_content = f"<thinking>\n{full_thinking}\n</thinking>\n\n{full_response}"
-                self.db.add_message(chat_id, "assistant", save_content)
-                
-                # Update title
-                messages_count = len(self.db.get_messages(chat_id))
-                if messages_count <= 2:
-                    title = message[:30] + "..." if len(message) > 30 else message
-                    self.db.update_chat_title(chat_id, title)
+                save_assistant_message(self.db, chat_id, message, full_response, full_thinking)
             
             # Send references if RAG was used
             if rag_references:
@@ -1272,34 +1291,15 @@ class LLMService:
             raise HTTPException(status_code=500, detail="Chat model not configured")
         
         settings = self.db.get_settings()
-        
-        compressor_config = get_context_compressor_config()
-        messages = self.build_history_messages(
+
+        messages, rag_references = await self.build_chat_completion_messages(
             chat_id,
-            use_compaction=compressor_config["enabled"],
-            system_prompt=effective_system_prompt if effective_system_prompt is not None else settings.chat_settings.system_prompt,
+            message,
+            use_rag,
+            image_base64,
+            effective_system_prompt,
+            include_image=bool(config.capability.vision),
         )
-        
-        # RAG context and references
-        rag_context = ""
-        rag_references = []
-        if use_rag:
-            rag_context, rag_references = await self.build_rag_context(message)
-        
-        # User message is already in history (saved with web_content). Only add RAG to last message if needed.
-        if rag_context and messages and messages[-1].get("role") == "user":
-            messages[-1] = {"role": "user", "content": f"{rag_context}User question: {messages[-1]['content']}"}
-        
-        # For vision: replace last user message with multimodal format
-        if image_base64 and config.capability.vision and messages and messages[-1].get("role") == "user":
-            text_content = messages[-1]["content"]
-            messages[-1] = {
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": text_content},
-                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_base64}"}}
-                ]
-            }
         
         url = config.api_url.rstrip("/") + "/chat/completions"
         headers = {"Content-Type": "application/json"}
@@ -1334,16 +1334,7 @@ class LLMService:
             if use_thinking:
                 thinking = msg_data.get("reasoning_content", "") or msg_data.get("reasoning", "") or msg_data.get("thinking", "")
             
-            # Save response (include thinking in saved message if present)
-            save_content = content
-            if thinking:
-                save_content = f"<thinking>\n{thinking}\n</thinking>\n\n{content}"
-            self.db.add_message(chat_id, "assistant", save_content)
-            
-            messages_count = len(self.db.get_messages(chat_id))
-            if messages_count <= 2:
-                title = message[:30] + "..." if len(message) > 30 else message
-                self.db.update_chat_title(chat_id, title)
+            save_assistant_message(self.db, chat_id, message, content, thinking)
             
             return {"content": content, "thinking": thinking, "references": rag_references}
     
@@ -2230,6 +2221,77 @@ def build_effective_system_prompt(system_prompt: str, active_skill_context: str)
         for part in (system_prompt or "", active_skill_context or "")
         if part and part.strip()
     )
+
+
+def save_assistant_message(db_instance: Database, chat_id: str, original_user_message: str, content: str, thinking: str = "") -> Message:
+    save_content = content or ""
+    if thinking:
+        save_content = f"<thinking>\n{thinking}\n</thinking>\n\n{save_content}"
+    message = db_instance.add_message(chat_id, "assistant", save_content)
+
+    messages_count = len(db_instance.get_messages(chat_id))
+    if messages_count <= 2:
+        title = original_user_message[:30] + "..." if len(original_user_message) > 30 else original_user_message
+        db_instance.update_chat_title(chat_id, title)
+
+    return message
+
+
+async def prepare_chat_submission(body: dict) -> dict:
+    chat_id = body.get("chat_id", "") or ""
+    message = body.get("message", "") or ""
+    use_rag = body.get("use_rag", False) or False
+    use_thinking = body.get("use_thinking", False) or False
+    image_base64 = body.get("image_base64", "") or ""
+    web_content = body.get("web_content", "") or ""
+    web_url = body.get("web_url", "") or ""
+    raw_active_skills = body.get("active_skills", [])
+
+    if not message:
+        raise HTTPException(status_code=400, detail="Message is required")
+
+    active_skill_names = parse_active_skill_names(raw_active_skills)
+    if active_skill_names and not is_skill_manager_enabled():
+        raise HTTPException(status_code=400, detail="Skill Manager plugin is not enabled")
+    active_skill_context, skill_activations = build_active_skill_context(active_skill_names)
+
+    if not chat_id or not db.chat_exists(chat_id):
+        chat_obj = db.create_chat("New Chat")
+        chat_id = chat_obj.id
+
+    settings = db.get_settings()
+    effective_system_prompt = build_effective_system_prompt(
+        settings.chat_settings.system_prompt,
+        active_skill_context,
+    )
+
+    # Save user message after automatic compaction so the current question is not summarized.
+    message_to_save = build_message_to_save(message, web_content, web_url)
+    compressor_config = get_context_compressor_config()
+    if compressor_config["enabled"] and compressor_config["auto_compress"]:
+        auto_result = await llm_service.maybe_auto_compact(
+            chat_id,
+            message_to_save,
+            compressor_config["threshold_percent"],
+            effective_system_prompt,
+        )
+        if not auto_result.get("success"):
+            raise HTTPException(status_code=400, detail=auto_result.get("error", "Context compaction failed"))
+
+    user_message = db.add_message(chat_id, "user", message_to_save)
+    db.add_skill_activations(chat_id, user_message.id, skill_activations)
+
+    return {
+        "chat_id": chat_id,
+        "message": message,
+        "use_rag": use_rag,
+        "use_thinking": use_thinking,
+        "image_base64": image_base64,
+        "web_content": web_content,
+        "web_url": web_url,
+        "settings": settings,
+        "effective_system_prompt": effective_system_prompt,
+    }
 
 
 class SkillInstallError(Exception):
@@ -3121,53 +3183,21 @@ async def chat(request: Request):
         body = await request.json()
     except:
         body = {}
-    
-    chat_id = body.get("chat_id", "") or ""
-    message = body.get("message", "") or ""
-    use_rag = body.get("use_rag", False) or False
-    use_thinking = body.get("use_thinking", False) or False
-    image_base64 = body.get("image_base64", "") or ""
-    web_content = body.get("web_content", "") or ""
-    web_url = body.get("web_url", "") or ""
-    raw_active_skills = body.get("active_skills", [])
-    
-    if not message:
-        return JSONResponse({"error": "Message is required"}, status_code=400)
 
     try:
-        active_skill_names = parse_active_skill_names(raw_active_skills)
-        if active_skill_names and not is_skill_manager_enabled():
-            return JSONResponse({"error": "Skill Manager plugin is not enabled"}, status_code=400)
-        active_skill_context, skill_activations = build_active_skill_context(active_skill_names)
+        submission = await prepare_chat_submission(body)
     except HTTPException as e:
         return JSONResponse({"error": e.detail}, status_code=e.status_code)
-    
-    # Create chat if needed
-    if not chat_id:
-        chat_obj = db.create_chat("New Chat")
-        chat_id = chat_obj.id
-    
-    settings = db.get_settings()
-    effective_system_prompt = build_effective_system_prompt(
-        settings.chat_settings.system_prompt,
-        active_skill_context,
-    )
 
-    # Save user message after any automatic compaction decision so the current question is not summarized.
-    message_to_save = build_message_to_save(message, web_content, web_url)
-    compressor_config = get_context_compressor_config()
-    if compressor_config["enabled"] and compressor_config["auto_compress"]:
-        auto_result = await llm_service.maybe_auto_compact(
-            chat_id,
-            message_to_save,
-            compressor_config["threshold_percent"],
-            effective_system_prompt,
-        )
-        if not auto_result.get("success"):
-            return JSONResponse({"error": auto_result.get("error", "Context compaction failed")}, status_code=400)
-
-    user_message = db.add_message(chat_id, "user", message_to_save)
-    db.add_skill_activations(chat_id, user_message.id, skill_activations)
+    chat_id = submission["chat_id"]
+    message = submission["message"]
+    use_rag = submission["use_rag"]
+    use_thinking = submission["use_thinking"]
+    image_base64 = submission["image_base64"]
+    web_content = submission["web_content"]
+    web_url = submission["web_url"]
+    settings = submission["settings"]
+    effective_system_prompt = submission["effective_system_prompt"]
     
     if settings.chat_settings.stream:
         # Streaming response
@@ -3777,6 +3807,14 @@ async def delete_skill(skill_name: str):
 PLUGINS_DIR = os.path.join(DATA_DIR, "plugins")
 PLUGINS_INSTALLED_DIR = os.path.join(PLUGINS_DIR, "installed")
 PLUGINS_CONFIG_FILE = os.path.join(PLUGINS_DIR, "config.json")
+HERMES_PLUGIN_ID = "hermes"
+HERMES_API_KEY_SERVICE_ID = "hermes"
+HERMES_SESSION_KEY_SERVICE_ID = "hermes-session-key"
+HERMES_DEFAULT_BASE_URL = "http://127.0.0.1:8642/v1"
+HERMES_DEFAULT_MODEL = "hermes-agent"
+HERMES_API_MODE_CHAT_COMPLETIONS = "chat_completions"
+HERMES_API_MODE_RUNS = "runs"
+HERMES_API_MODES = {HERMES_API_MODE_CHAT_COMPLETIONS, HERMES_API_MODE_RUNS}
 
 # Plugin upload size limit (10MB)
 MAX_PLUGIN_SIZE = int(os.environ.get("MAX_PLUGIN_SIZE", str(10 * 1024 * 1024)))
@@ -3873,6 +3911,785 @@ def save_plugin_config(config: dict):
                 json.dump(config, f, ensure_ascii=False, indent=2)
         except Exception as e:
             logger.error(f"Failed to save plugin config: {e}")
+
+
+class HermesBridgeError(Exception):
+    def __init__(self, message: str, status_code: int = 400):
+        super().__init__(message)
+        self.message = message
+        self.status_code = status_code
+
+
+class HermesRunDisconnected(Exception):
+    pass
+
+
+def _hermes_error_response(error: Exception, success_shape: bool = False) -> JSONResponse:
+    status_code = getattr(error, "status_code", 500)
+    message = getattr(error, "detail", None) or getattr(error, "message", None) or str(error)
+    payload = {"success": False, "error": message} if success_shape else {"error": message}
+    return JSONResponse(payload, status_code=status_code)
+
+
+def validate_hermes_chat_body(body: dict):
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="Hermes chat body must be a JSON object")
+
+    forbidden_normalized = {
+        "url",
+        "endpoint",
+        "path",
+        "headers",
+        "apikey",
+        "baseurl",
+        "model",
+        "session",
+        "sessionid",
+        "sessionkey",
+        "hermessessionid",
+        "hermessessionkey",
+        "xhermessessionid",
+        "xhermessessionkey",
+        "apimode",
+        "runmode",
+        "runsmode",
+        "transportmode",
+        "runid",
+        "hermesrunid",
+        "xhermesrunid",
+        "eventsurl",
+        "eventurl",
+        "stopurl",
+    }
+    forbidden = []
+    for key in body.keys():
+        normalized = str(key).replace("_", "").replace("-", "").lower()
+        if normalized in forbidden_normalized:
+            forbidden.append(str(key))
+
+    if forbidden:
+        fields = ", ".join(sorted(forbidden))
+        raise HTTPException(
+            status_code=400,
+            detail=f"Hermes chat body must not include transport fields: {fields}",
+        )
+
+
+def _is_hermes_plugin_enabled(config: Optional[dict] = None) -> bool:
+    config = config or load_plugin_config()
+    plugin_config = config.get("plugins", {}).get(HERMES_PLUGIN_ID, {})
+    manifest_path = os.path.join(PLUGINS_INSTALLED_DIR, HERMES_PLUGIN_ID, "manifest.json")
+    return bool(plugin_config.get("enabled", False)) and os.path.isfile(manifest_path)
+
+
+def _origin_key(origin: str) -> Optional[Tuple[str, str, int]]:
+    try:
+        parsed = urlparse(str(origin))
+        if parsed.scheme not in ("http", "https") or not parsed.hostname:
+            return None
+        port = parsed.port
+    except ValueError:
+        return None
+    if port is None:
+        port = 443 if parsed.scheme == "https" else 80
+    return (parsed.scheme.lower(), parsed.hostname.lower(), port)
+
+
+def validate_hermes_request_origin(request: Request):
+    origin = request.headers.get("origin")
+    if not origin:
+        return
+
+    origin_key = _origin_key(origin)
+    if not origin_key:
+        raise HTTPException(status_code=403, detail="Invalid Origin for Hermes bridge")
+
+    request_key = _origin_key(str(request.url))
+    if request_key and origin_key == request_key:
+        return
+
+    if CORS_ORIGINS != "*":
+        for allowed_origin in [item.strip() for item in CORS_ORIGINS.split(",") if item.strip()]:
+            if allowed_origin == "*":
+                continue
+            if origin_key == _origin_key(allowed_origin):
+                return
+
+    raise HTTPException(status_code=403, detail="Cross-origin Hermes bridge requests are not allowed")
+
+
+def validate_hermes_base_url(base_url: str) -> str:
+    raw_url = str(base_url or "").strip()
+    try:
+        parsed = urlparse(raw_url)
+    except Exception:
+        raise HermesBridgeError("Invalid Hermes base URL")
+
+    if parsed.scheme not in ("http", "https"):
+        raise HermesBridgeError("Hermes base URL must use http or https")
+    if not parsed.netloc or not parsed.hostname:
+        raise HermesBridgeError("Hermes base URL must include a host")
+    if parsed.username or parsed.password:
+        raise HermesBridgeError("Hermes base URL must not include credentials")
+    if parsed.query or parsed.fragment:
+        raise HermesBridgeError("Hermes base URL must not include query or fragment")
+
+    hostname = parsed.hostname.lower()
+    if hostname != "localhost":
+        try:
+            address = ipaddress.ip_address(hostname)
+        except ValueError:
+            raise HermesBridgeError("Hermes base URL host must be localhost or a loopback IP")
+        if not address.is_loopback:
+            raise HermesBridgeError("Hermes base URL must point to a loopback address")
+
+    return raw_url.rstrip("/")
+
+
+def get_hermes_config(require_enabled: bool = True) -> dict:
+    config = load_plugin_config()
+    if require_enabled and not _is_hermes_plugin_enabled(config):
+        raise HTTPException(status_code=403, detail="Hermes plugin is not enabled")
+
+    plugin_config = config.get("plugins", {}).get(HERMES_PLUGIN_ID, {})
+    settings = plugin_config.get("settings_values", {}) or {}
+    base_url = validate_hermes_base_url(settings.get("baseUrl") or HERMES_DEFAULT_BASE_URL)
+    model = settings.get("model") or HERMES_DEFAULT_MODEL
+    if not isinstance(model, str) or not model.strip():
+        model = HERMES_DEFAULT_MODEL
+    api_mode = settings.get("apiMode", HERMES_API_MODE_CHAT_COMPLETIONS)
+    if api_mode is None:
+        api_mode = HERMES_API_MODE_CHAT_COMPLETIONS
+    if not isinstance(api_mode, str) or api_mode not in HERMES_API_MODES:
+        raise HermesBridgeError("Unsupported Hermes API mode")
+
+    api_key = config.get("api_keys", {}).get(HERMES_API_KEY_SERVICE_ID)
+    if not api_key:
+        raise HermesBridgeError("Hermes API key is not configured")
+
+    session_key = config.get("api_keys", {}).get(HERMES_SESSION_KEY_SERVICE_ID, "") or ""
+    return {
+        "base_url": base_url,
+        "model": model.strip(),
+        "api_key": api_key,
+        "session_key": session_key,
+        "api_mode": api_mode,
+    }
+
+
+def _hermes_base_headers(config: dict) -> dict:
+    return {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {config['api_key']}",
+    }
+
+
+def build_hermes_session_id(chat_id: str) -> str:
+    if not chat_id:
+        raise HermesBridgeError("Hermes chat session requires a chat_id", status_code=500)
+    return f"chatraw-{chat_id}"
+
+
+def _hermes_chat_headers(config: dict, chat_id: str) -> dict:
+    headers = _hermes_base_headers(config)
+    headers["X-Hermes-Session-Id"] = build_hermes_session_id(chat_id)
+    if config.get("session_key"):
+        headers["X-Hermes-Session-Key"] = config["session_key"]
+    return headers
+
+
+async def _read_limited_response_text(resp, limit: int = 500) -> str:
+    text = await resp.text()
+    return text[:limit]
+
+
+def _hermes_upstream_error(status: int, text: str) -> HermesBridgeError:
+    if 300 <= status < 400:
+        return HermesBridgeError(f"Hermes redirect blocked ({status})", status_code=400)
+    status_code = status if status == 401 else 502
+    return HermesBridgeError(f"Hermes API error ({status}): {text}", status_code=status_code)
+
+
+def _extract_openai_content(message: dict) -> str:
+    content = message.get("content", "")
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for item in content:
+            if isinstance(item, dict) and item.get("type") == "text" and item.get("text"):
+                parts.append(str(item["text"]))
+            elif isinstance(item, dict) and item.get("text"):
+                parts.append(str(item["text"]))
+        return "\n".join(parts)
+    return ""
+
+
+def _extract_openai_thinking(message: dict) -> str:
+    return (
+        message.get("reasoning_content", "")
+        or message.get("reasoning", "")
+        or message.get("thinking", "")
+        or ""
+    )
+
+
+async def _build_hermes_chat_payload(submission: dict, config: dict, stream: bool) -> Tuple[dict, List[dict]]:
+    messages, references = await llm_service.build_chat_completion_messages(
+        submission["chat_id"],
+        submission["message"],
+        submission["use_rag"],
+        submission["image_base64"],
+        submission["effective_system_prompt"],
+        include_image=bool(submission["image_base64"]),
+    )
+    settings = submission["settings"]
+    payload = {
+        "model": config["model"],
+        "messages": messages,
+        "temperature": settings.chat_settings.temperature,
+        "top_p": settings.chat_settings.top_p,
+        "stream": stream,
+    }
+    if submission["use_thinking"]:
+        payload["enable_thinking"] = True
+        if stream:
+            payload["stream_options"] = {"include_reasoning": True}
+    return payload, references
+
+
+async def _build_hermes_run_payload(submission: dict, config: dict) -> Tuple[dict, List[dict]]:
+    payload, references = await _build_hermes_chat_payload(submission, config, stream=False)
+    payload.pop("stream", None)
+    return payload, references
+
+
+def _extract_text_value(value) -> str:
+    if isinstance(value, str):
+        return value
+    if isinstance(value, dict):
+        for key in ("text", "content", "output_text", "message"):
+            text = _extract_text_value(value.get(key))
+            if text:
+                return text
+    if isinstance(value, list):
+        parts = [_extract_text_value(item) for item in value]
+        return "".join(part for part in parts if part)
+    return ""
+
+
+def _extract_error_message(value) -> str:
+    if isinstance(value, str):
+        return value
+    if isinstance(value, dict):
+        return (
+            _extract_text_value(value.get("message"))
+            or _extract_text_value(value.get("error"))
+            or _extract_text_value(value.get("detail"))
+        )
+    return ""
+
+
+def normalize_hermes_run_event(event: dict) -> dict:
+    if not isinstance(event, dict):
+        return {}
+
+    data = event.get("data") if isinstance(event.get("data"), dict) else event
+    event_type = str(data.get("type") or event.get("type") or event.get("event") or "").lower()
+    status = str(data.get("status") or event.get("status") or "").lower()
+    type_status = " ".join(part for part in (event_type, status) if part)
+
+    result = {
+        "content_delta": "",
+        "thinking_delta": "",
+        "status": status,
+        "terminal": False,
+        "error": "",
+        "approval_required": False,
+    }
+
+    if "approval" in type_status or "requires_action" in type_status or "requires-action" in type_status:
+        result["approval_required"] = True
+        result["terminal"] = True
+        result["error"] = "Hermes run requires approval; approval UI is not implemented"
+        return result
+
+    if "tool" in event_type:
+        return {}
+
+    raw_delta = data.get("delta")
+    delta = raw_delta if isinstance(raw_delta, dict) else {}
+    scalar_delta = _extract_text_value(raw_delta) if raw_delta is not None and not isinstance(raw_delta, dict) else ""
+    content = (
+        scalar_delta
+        or _extract_text_value(delta.get("content"))
+        or _extract_text_value(data.get("content"))
+        or _extract_text_value(data.get("text"))
+        or _extract_text_value(data.get("output_text"))
+        or _extract_text_value(data.get("output"))
+    )
+    thinking = (
+        _extract_text_value(delta.get("reasoning_content"))
+        or _extract_text_value(delta.get("reasoning"))
+        or _extract_text_value(delta.get("thinking"))
+    )
+    result["content_delta"] = content
+    result["thinking_delta"] = thinking
+
+    if any(token in type_status for token in ("completed", "succeeded", "done")):
+        result["terminal"] = True
+        return result
+
+    if any(token in type_status for token in ("failed", "cancelled", "canceled", "error")):
+        result["terminal"] = True
+        result["error"] = (
+            _extract_error_message(data.get("error"))
+            or _extract_error_message(data.get("message"))
+            or "Hermes run failed"
+        )
+        return result
+
+    if data.get("error"):
+        result["error"] = _extract_error_message(data.get("error")) or "Hermes run error"
+        result["terminal"] = True
+
+    return result
+
+
+async def _create_hermes_run(session, submission: dict, config: dict) -> Tuple[str, List[dict]]:
+    payload, references = await _build_hermes_run_payload(submission, config)
+    async with session.post(
+        f"{config['base_url']}/runs",
+        json=payload,
+        headers=_hermes_chat_headers(config, submission["chat_id"]),
+        timeout=aiohttp.ClientTimeout(total=60, connect=10),
+        allow_redirects=False,
+    ) as resp:
+        if resp.status < 200 or resp.status >= 300:
+            text = await _read_limited_response_text(resp)
+            raise _hermes_upstream_error(resp.status, text)
+        data = await resp.json()
+
+    run_id = data.get("run_id") or data.get("id")
+    if not run_id:
+        raise HermesBridgeError("Hermes run response did not include a run id", status_code=502)
+    return str(run_id), references
+
+
+async def _is_request_disconnected(request: Request) -> bool:
+    checker = getattr(request, "is_disconnected", None)
+    if not callable(checker):
+        return False
+    try:
+        return bool(await checker())
+    except Exception:
+        return False
+
+
+async def _stop_hermes_run(session, submission: dict, config: dict, run_id: str):
+    if not run_id:
+        return
+    try:
+        async with session.post(
+            f"{config['base_url']}/runs/{run_id}/stop",
+            json={},
+            headers=_hermes_chat_headers(config, submission["chat_id"]),
+            timeout=aiohttp.ClientTimeout(total=30, connect=5),
+            allow_redirects=False,
+        ) as resp:
+            if resp.status >= 400:
+                text = await _read_limited_response_text(resp, limit=200)
+                logger.warning(f"Hermes run stop returned {resp.status}: {text}")
+    except Exception as e:
+        logger.warning(f"Failed to stop Hermes run {run_id}: {e}")
+
+
+async def _iter_hermes_run_events(session, submission: dict, config: dict, request: Request, run_id: str):
+    async with session.get(
+        f"{config['base_url']}/runs/{run_id}/events",
+        headers=_hermes_chat_headers(config, submission["chat_id"]),
+        timeout=aiohttp.ClientTimeout(total=300, connect=10),
+        allow_redirects=False,
+    ) as resp:
+        if resp.status != 200:
+            text = await _read_limited_response_text(resp)
+            raise _hermes_upstream_error(resp.status, text)
+
+        async for event_data in _iter_hermes_sse_events(resp):
+            if await _is_request_disconnected(request):
+                await _stop_hermes_run(session, submission, config, run_id)
+                raise HermesRunDisconnected()
+            event = normalize_hermes_run_event(event_data)
+            if event:
+                yield event
+            if event.get("terminal"):
+                return
+
+
+async def _consume_hermes_run(submission: dict, config: dict, request: Request, stream: bool):
+    session = await get_http_session()
+    run_id = ""
+    references = []
+    full_response = ""
+    full_thinking = ""
+    terminal_seen = False
+
+    try:
+        run_id, references = await _create_hermes_run(session, submission, config)
+        async for event in _iter_hermes_run_events(session, submission, config, request, run_id):
+            if event.get("terminal"):
+                terminal_seen = True
+            if event.get("approval_required"):
+                approval_thinking = "Hermes run requires approval..."
+                if stream:
+                    await _stop_hermes_run(session, submission, config, run_id)
+                    yield json.dumps({"thinking": approval_thinking})
+                    yield json.dumps({"error": event["error"]})
+                    return
+                raise HermesBridgeError(event["error"], status_code=409)
+
+            thinking = event.get("thinking_delta") or ""
+            if thinking:
+                full_thinking += thinking
+                if stream:
+                    yield json.dumps({"thinking": thinking})
+
+            content = event.get("content_delta") or ""
+            if content:
+                full_response += content
+                if stream:
+                    yield json.dumps({"content": content})
+
+            if event.get("error"):
+                if full_response or full_thinking:
+                    save_assistant_message(db, submission["chat_id"], submission["message"], full_response, full_thinking)
+                if stream:
+                    yield json.dumps({"error": event["error"]})
+                    return
+                raise HermesBridgeError(event["error"], status_code=502)
+
+            if event.get("terminal"):
+                break
+
+        if not terminal_seen:
+            message = "Hermes run event stream ended before completion"
+            if run_id:
+                await _stop_hermes_run(session, submission, config, run_id)
+            if stream:
+                yield json.dumps({"error": message})
+                return
+            raise HermesBridgeError(message, status_code=502)
+
+        if full_response or full_thinking:
+            save_assistant_message(db, submission["chat_id"], submission["message"], full_response, full_thinking)
+        if stream and references:
+            yield json.dumps({"references": references})
+        if stream:
+            yield json.dumps({"done": True})
+        else:
+            yield json.dumps({"content": full_response, "thinking": full_thinking, "references": references})
+    except asyncio.CancelledError:
+        if run_id:
+            await _stop_hermes_run(session, submission, config, run_id)
+        if full_response or full_thinking:
+            save_assistant_message(db, submission["chat_id"], submission["message"], full_response, full_thinking)
+        raise
+    except HermesRunDisconnected:
+        if full_response or full_thinking:
+            save_assistant_message(db, submission["chat_id"], submission["message"], full_response, full_thinking)
+        return
+    except asyncio.TimeoutError:
+        message = "Hermes run request timeout"
+        if run_id:
+            await _stop_hermes_run(session, submission, config, run_id)
+        if stream:
+            yield json.dumps({"error": message})
+            return
+        raise HermesBridgeError(message, status_code=504)
+    except aiohttp.ClientError as e:
+        message = f"Hermes network error: {str(e)}"
+        if run_id:
+            await _stop_hermes_run(session, submission, config, run_id)
+        if stream:
+            yield json.dumps({"error": message})
+            return
+        raise HermesBridgeError(message, status_code=502)
+    except HermesBridgeError as e:
+        if run_id:
+            await _stop_hermes_run(session, submission, config, run_id)
+        if stream:
+            yield json.dumps({"error": e.message})
+            return
+        raise
+
+
+async def _stream_hermes_run_chunks(submission: dict, config: dict, request: Request) -> AsyncGenerator[str, None]:
+    async for chunk in _consume_hermes_run(submission, config, request, stream=True):
+        yield chunk
+
+
+async def _call_hermes_run_non_stream(submission: dict, config: dict, request: Request) -> dict:
+    async for chunk in _consume_hermes_run(submission, config, request, stream=False):
+        return json.loads(chunk)
+    return {"content": "", "thinking": "", "references": []}
+
+
+async def _call_hermes_non_stream(submission: dict, config: dict) -> dict:
+    payload, references = await _build_hermes_chat_payload(submission, config, stream=False)
+    session = await get_http_session()
+    try:
+        async with session.post(
+            f"{config['base_url']}/chat/completions",
+            json=payload,
+            headers=_hermes_chat_headers(config, submission["chat_id"]),
+            timeout=aiohttp.ClientTimeout(total=300, connect=10),
+            allow_redirects=False,
+        ) as resp:
+            if resp.status != 200:
+                text = await _read_limited_response_text(resp)
+                raise _hermes_upstream_error(resp.status, text)
+            data = await resp.json()
+    except asyncio.TimeoutError:
+        raise HermesBridgeError("Hermes request timeout", status_code=504)
+    except aiohttp.ClientError as e:
+        raise HermesBridgeError(f"Hermes network error: {str(e)}", status_code=502)
+
+    try:
+        message = data["choices"][0]["message"]
+    except (KeyError, IndexError, TypeError):
+        raise HermesBridgeError("Hermes response did not include a chat message", status_code=502)
+
+    content = _extract_openai_content(message)
+    thinking = _extract_openai_thinking(message) if submission["use_thinking"] else ""
+    save_assistant_message(db, submission["chat_id"], submission["message"], content, thinking)
+    return {"content": content, "thinking": thinking, "references": references}
+
+
+async def _iter_hermes_sse_json(resp):
+    decoder = codecs.getincrementaldecoder("utf-8")()
+    buffer = ""
+    async for chunk in resp.content.iter_any():
+        buffer += decoder.decode(chunk)
+        while "\n" in buffer:
+            line, buffer = buffer.split("\n", 1)
+            line = line.strip()
+            if not line or line.startswith(":") or not line.startswith("data:"):
+                continue
+            data = line[5:].strip()
+            if data == "[DONE]":
+                return
+            try:
+                yield json.loads(data)
+            except json.JSONDecodeError:
+                continue
+
+    buffer += decoder.decode(b"", final=True)
+    for line in buffer.splitlines():
+        line = line.strip()
+        if not line or line.startswith(":") or not line.startswith("data:"):
+            continue
+        data = line[5:].strip()
+        if data == "[DONE]":
+            return
+        try:
+            yield json.loads(data)
+        except json.JSONDecodeError:
+            continue
+
+
+async def _iter_hermes_sse_events(resp):
+    decoder = codecs.getincrementaldecoder("utf-8")()
+    buffer = ""
+    event_name = ""
+    data_lines = []
+
+    async def emit_event():
+        nonlocal event_name, data_lines
+        if not data_lines:
+            event_name = ""
+            return None
+        raw_data = "\n".join(data_lines).strip()
+        current_event = event_name
+        event_name = ""
+        data_lines = []
+        if raw_data == "[DONE]":
+            return "__DONE__"
+        try:
+            payload = json.loads(raw_data)
+        except json.JSONDecodeError:
+            return None
+        if current_event:
+            if isinstance(payload, dict):
+                return {"event": current_event, "data": payload}
+            return {"event": current_event, "data": {"text": str(payload)}}
+        return payload
+
+    async for chunk in resp.content.iter_any():
+        buffer += decoder.decode(chunk)
+        while "\n" in buffer:
+            line, buffer = buffer.split("\n", 1)
+            line = line.rstrip("\r")
+            if not line:
+                event = await emit_event()
+                if event == "__DONE__":
+                    return
+                if event:
+                    yield event
+                continue
+            if line.startswith(":"):
+                continue
+            if line.startswith("event:"):
+                event_name = line[6:].strip()
+            elif line.startswith("data:"):
+                data_lines.append(line[5:].lstrip())
+
+    buffer += decoder.decode(b"", final=True)
+    if buffer.strip():
+        for line in buffer.splitlines():
+            line = line.rstrip("\r")
+            if line.startswith("event:"):
+                event_name = line[6:].strip()
+            elif line.startswith("data:"):
+                data_lines.append(line[5:].lstrip())
+    event = await emit_event()
+    if event and event != "__DONE__":
+        yield event
+
+
+async def _stream_hermes_chat_chunks(submission: dict, config: dict) -> AsyncGenerator[str, None]:
+    payload, references = await _build_hermes_chat_payload(submission, config, stream=True)
+    full_response = ""
+    full_thinking = ""
+    try:
+        session = await get_http_session()
+        async with session.post(
+            f"{config['base_url']}/chat/completions",
+            json=payload,
+            headers=_hermes_chat_headers(config, submission["chat_id"]),
+            timeout=aiohttp.ClientTimeout(total=300, connect=10),
+            allow_redirects=False,
+        ) as resp:
+            if resp.status != 200:
+                text = await _read_limited_response_text(resp)
+                yield json.dumps({"error": _hermes_upstream_error(resp.status, text).message})
+                return
+
+            async for chunk_data in _iter_hermes_sse_json(resp):
+                choices = chunk_data.get("choices") if isinstance(chunk_data, dict) else None
+                if not choices:
+                    continue
+                delta = choices[0].get("delta", {}) if choices[0] else {}
+
+                thinking = ""
+                if submission["use_thinking"]:
+                    thinking = (
+                        delta.get("reasoning_content", "")
+                        or delta.get("reasoning", "")
+                        or delta.get("thinking", "")
+                        or ""
+                    )
+                if thinking:
+                    full_thinking += thinking
+                    yield json.dumps({"thinking": thinking})
+
+                content = delta.get("content", "") or ""
+                if content:
+                    full_response += content
+                    yield json.dumps({"content": content})
+
+        if full_response or full_thinking:
+            save_assistant_message(db, submission["chat_id"], submission["message"], full_response, full_thinking)
+        if references:
+            yield json.dumps({"references": references})
+        yield json.dumps({"done": True})
+    except asyncio.TimeoutError:
+        yield json.dumps({"error": "Hermes request timeout"})
+    except aiohttp.ClientError as e:
+        yield json.dumps({"error": f"Hermes network error: {str(e)}"})
+    except Exception as e:
+        yield json.dumps({"error": str(e)})
+
+
+@app.get("/api/hermes/health")
+async def hermes_health(request: Request):
+    try:
+        validate_hermes_request_origin(request)
+        config = get_hermes_config(require_enabled=True)
+        session = await get_http_session()
+        async with session.get(
+            f"{config['base_url']}/models",
+            headers=_hermes_base_headers(config),
+            timeout=aiohttp.ClientTimeout(total=10, connect=5),
+            allow_redirects=False,
+        ) as resp:
+            if resp.status != 200:
+                text = await _read_limited_response_text(resp, limit=200)
+                raise _hermes_upstream_error(resp.status, text)
+        return {"success": True, "model": config["model"], "base_url": config["base_url"]}
+    except HTTPException as e:
+        return _hermes_error_response(e, success_shape=True)
+    except HermesBridgeError as e:
+        return _hermes_error_response(e, success_shape=True)
+    except asyncio.TimeoutError:
+        return JSONResponse({"success": False, "error": "Hermes health check timeout"}, status_code=504)
+    except aiohttp.ClientError as e:
+        return JSONResponse({"success": False, "error": f"Hermes network error: {str(e)}"}, status_code=502)
+    except Exception as e:
+        logger.error(f"Hermes health error: {e}")
+        return JSONResponse({"success": False, "error": str(e)}, status_code=500)
+
+
+@app.post("/api/hermes/chat")
+async def hermes_chat(request: Request):
+    try:
+        validate_hermes_request_origin(request)
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        validate_hermes_chat_body(body)
+        config = get_hermes_config(require_enabled=True)
+        submission = await prepare_chat_submission(body)
+    except HTTPException as e:
+        return _hermes_error_response(e)
+    except HermesBridgeError as e:
+        return _hermes_error_response(e)
+
+    settings = submission["settings"]
+    if settings.chat_settings.stream:
+        async def generate():
+            yield json.dumps({"chat_id": submission["chat_id"]}) + "\n"
+            if config["api_mode"] == HERMES_API_MODE_RUNS:
+                stream_chunks = _stream_hermes_run_chunks(submission, config, request)
+            else:
+                stream_chunks = _stream_hermes_chat_chunks(submission, config)
+            async for chunk in stream_chunks:
+                yield chunk + "\n"
+
+        return StreamingResponse(
+            generate(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "X-Accel-Buffering": "no",
+                "Content-Encoding": "identity"
+            }
+        )
+
+    try:
+        if config["api_mode"] == HERMES_API_MODE_RUNS:
+            result = await _call_hermes_run_non_stream(submission, config, request)
+        else:
+            result = await _call_hermes_non_stream(submission, config)
+        return {
+            "chat_id": submission["chat_id"],
+            "content": result["content"],
+            "thinking": result.get("thinking", ""),
+            "references": result["references"],
+        }
+    except HermesBridgeError as e:
+        return _hermes_error_response(e)
+
 
 def get_installed_plugins() -> List[dict]:
     """Get list of installed plugins with their config"""

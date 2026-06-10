@@ -355,6 +355,12 @@ const SKILL_MANAGER_PLUGIN_ID = 'skill-manager';
 const COMPOSER_COMPLETION_LIMIT = 20;
 const SKILL_CATALOG_CACHE_MS = 30000;
 const MAX_ACTIVE_SKILLS_PER_REQUEST = 5;
+const DEFAULT_CHAT_ENDPOINT = '/api/chat';
+const CHAT_ROUTE_ENDPOINTS = Object.freeze({
+    hermes: '/api/hermes/chat'
+});
+const ALLOWED_CHAT_ENDPOINTS = new Set([DEFAULT_CHAT_ENDPOINT, ...Object.values(CHAT_ROUTE_ENDPOINTS)]);
+const ROUTE_MESSAGE_RESULT_KEYS = new Set(['success', 'route']);
 const RESERVED_SLASH_COMMANDS = new Set(['plugins', 'settings', 'help', 'clear', 'compact', 'api']);
 const COMMON_PATH_ROOTS = new Set(['tmp', 'var', 'usr', 'etc', 'home', 'users', 'opt', 'private', 'volumes', 'mnt']);
 const SKILL_NAME_PATTERN = /^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/;
@@ -445,6 +451,7 @@ function app() {
             // Message lifecycle
             send_intercept: [],      // Pre-send interceptors that can fully handle a message
             before_send: [],         // Before sending message to AI
+            route_message: [],        // Select a host-approved chat route
             after_receive: [],       // After receiving AI response
             
             // UI extensions
@@ -1384,6 +1391,85 @@ function app() {
 
             this.$nextTick(() => this.scrollToBottom());
         },
+
+        normalizeChatEndpoint(endpoint) {
+            if (ALLOWED_CHAT_ENDPOINTS.has(endpoint)) {
+                return endpoint;
+            }
+            console.warn('[Route] Ignored non-allowlisted chat endpoint:', endpoint);
+            return DEFAULT_CHAT_ENDPOINT;
+        },
+
+        buildRouteMessageBody(body) {
+            const routeBody = { ...body };
+            if (Array.isArray(body.active_skills)) {
+                routeBody.active_skills = Object.freeze([...body.active_skills]);
+            }
+            return Object.freeze(routeBody);
+        },
+
+        isValidRouteMessageResult(result) {
+            if (!result || typeof result !== 'object' || Array.isArray(result)) {
+                return false;
+            }
+
+            const symbolKeys = Object.getOwnPropertySymbols(result);
+            if (symbolKeys.length > 0) {
+                console.warn('[Route] Ignored route_message result with unsupported symbol fields');
+                return false;
+            }
+
+            const resultKeys = Object.getOwnPropertyNames(result);
+            const extraKeys = resultKeys.filter(key => !ROUTE_MESSAGE_RESULT_KEYS.has(key));
+            if (extraKeys.length > 0) {
+                console.warn('[Route] Ignored route_message result with unsupported fields:', extraKeys.join(', '));
+                return false;
+            }
+
+            if (!Object.prototype.hasOwnProperty.call(result, 'success') || result.success !== true) {
+                console.warn('[Route] Ignored route_message result without success: true');
+                return false;
+            }
+
+            if (!Object.prototype.hasOwnProperty.call(result, 'route') || typeof result.route !== 'string') {
+                console.warn('[Route] Ignored route_message result without a string route');
+                return false;
+            }
+
+            return true;
+        },
+
+        async resolveMessageRouteEndpoint(body) {
+            const handlers = this.pluginHooks.route_message || [];
+            if (!handlers.length) {
+                return DEFAULT_CHAT_ENDPOINT;
+            }
+
+            const routeBody = this.buildRouteMessageBody(body);
+            for (const handler of handlers) {
+                if (handler._pluginId) {
+                    const plugin = this.installedPlugins.find(p => p.id === handler._pluginId);
+                    if (plugin && !plugin.enabled) continue;
+                }
+
+                try {
+                    const result = await handler.handler(routeBody);
+                    if (!result?.success) continue;
+                    if (!this.isValidRouteMessageResult(result)) continue;
+
+                    const endpoint = CHAT_ROUTE_ENDPOINTS[result.route];
+                    if (endpoint) {
+                        return this.normalizeChatEndpoint(endpoint);
+                    }
+
+                    console.warn('[Route] Ignored unknown chat route:', result.route);
+                } catch (e) {
+                    console.error('[Hook route_message] Error:', e);
+                }
+            }
+
+            return DEFAULT_CHAT_ENDPOINT;
+        },
         
         // Send message
         async sendMessage() {
@@ -1457,15 +1543,17 @@ function app() {
                 } else {
                     delete body.active_skills;
                 }
+
+                const endpoint = await this.resolveMessageRouteEndpoint(body);
                 
                 this.removeUploadedImage();
                 this.removeParsedUrl();
                 this.removeAttachedDocument();
                 
                 if (this.settings.chat_settings.stream) {
-                    await this.handleStreamResponse(body);
+                    await this.handleStreamResponse(body, endpoint);
                 } else {
-                    await this.handleNormalResponse(body);
+                    await this.handleNormalResponse(body, endpoint);
                 }
                 // Call after_receive hooks for post-processing
                 const lastMsg = this.messages[this.messages.length - 1];
@@ -1493,8 +1581,9 @@ function app() {
         },
         
         // Handle stream response (NDJSON format) - TRUE STREAMING
-        async handleStreamResponse(body) {
-            const res = await fetch('/api/chat', {
+        async handleStreamResponse(body, endpoint = DEFAULT_CHAT_ENDPOINT) {
+            const chatEndpoint = this.normalizeChatEndpoint(endpoint);
+            const res = await fetch(chatEndpoint, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(body),
@@ -1583,11 +1672,13 @@ function app() {
         },
         
         // Handle normal response
-        async handleNormalResponse(body) {
-            const res = await fetch('/api/chat', {
+        async handleNormalResponse(body, endpoint = DEFAULT_CHAT_ENDPOINT) {
+            const chatEndpoint = this.normalizeChatEndpoint(endpoint);
+            const res = await fetch(chatEndpoint, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(body)
+                body: JSON.stringify(body),
+                signal: this.abortController?.signal
             });
             
             const data = await res.json();

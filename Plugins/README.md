@@ -104,6 +104,7 @@ your-plugin/
 | `rag_enhancer` | Enhance RAG pipeline | `pre_embedding`, `post_retrieval`, `before_send`, `custom_settings` |
 | `ui_extension` | Add UI elements | `toolbar_button`, `custom_action`, `send_intercept` |
 | `message_processor` | Process messages | `before_send`, `after_receive`, `transform_input`, `transform_output` |
+| `message_router` | Select a host-approved chat backend route | `route_message` |
 | `model_manager` | Manage multiple model configs | `custom_settings` |
 
 ### Available Hooks
@@ -117,6 +118,7 @@ your-plugin/
 | `post_retrieval` | After RAG retrieval | `(results, settings)` | `{ success, results }` |
 | `send_intercept` | Pre-send interceptor that can fully handle a message before normal chat sending | `(context)` | `{ success, handled?, userMessage?, assistantMessage?, clearInput?, clearAttachments?, refreshSkillCatalog? }` |
 | `before_send` | Before sending message | `(body)` | `{ success, body }` |
+| `route_message` | Select a host-approved chat route | `(body)` | `{ success, route }` |
 | `after_receive` | After receiving response | `(message)` | `{ success, content }` |
 | `transform_input` | Transform user input | `(message)` | `{ success, content }` |
 | `transform_output` | Transform AI output | `(content)` | `{ success, content }` |
@@ -137,6 +139,37 @@ highlighted by the host, Backspace/Delete removes the whole token, and the backe
 distinct active skills per request. The host writes `body.active_skills` after `before_send` completes so
 regular hooks cannot accidentally override the user's explicit skill selection. Plugins that need to
 handle the pre-send skill list should use `send_intercept` and read `context.activeSkillNames`.
+
+`route_message` is a restricted, mutually exclusive routing hook. Normal chat sending runs
+`transform_input`, builds the `/api/chat`-compatible body, runs `before_send`, writes host-owned fields
+such as `active_skills`, and only then calls `route_message`. The hook may only return a host-approved
+route id such as `{ success: true, route: 'hermes' }`; it must not return URLs, paths, endpoints,
+headers, API keys, or response-handling instructions. The host maps route ids to same-origin allowlist
+endpoints such as `hermes -> /api/hermes/chat`, and the selected endpoint must keep the same JSON/NDJSON
+contract as `/api/chat`. Multiple route hooks are checked by priority, but invalid or unknown route
+results are skipped instead of winning. Do not use `before_send` for routing; it is only for body
+enhancement.
+
+Dedicated host routes may add backend-owned transport metadata. For the Hermes bridge, ChatRaw derives
+`X-Hermes-Session-Id` from the final persisted `chat_id` as `chatraw-{chat_id}` after missing or stale
+chats are resolved. Plugins and request bodies must not provide session ids, session keys, headers, or
+other transport fields. The optional `X-Hermes-Session-Key` is stored as a backend API-key secret with
+service id `hermes-session-key`; browser UI should only display masked state. ChatRaw owns the local chat
+list and message history, while Hermes owns its agent/session state.
+
+Hermes can optionally use a backend-saved execution mode. `apiMode: runs` tells the Hermes bridge to
+create `/v1/runs` and subscribe to run events behind the same `/api/hermes/chat` ChatRaw contract. This
+setting is not a `route_message` return value and must not be provided in request bodies. Run tool
+progress is intentionally not mixed into final assistant `content`; ChatRaw continues to render the
+existing chat UI, and the bridge maps only final text/reasoning/error state into the existing response
+contract.
+
+Hermes integration QA should cover the plugin lifecycle and the host bridge together: install and
+enable/disable the plugin, toggle Hermes on/off, send default and Hermes-routed messages, verify
+`before_send` search/RAG enhancers still modify the same body, switch/new/delete chats, test stream and
+non-stream modes, stop generation in Runs mode, and confirm Save & Check calls `/api/hermes/health`
+instead of `/api/proxy/request`. User setup and troubleshooting are documented in
+[`docs/hermes.md`](../docs/hermes.md).
 
 ### Settings Types
 
@@ -1117,6 +1150,8 @@ button.onclick = async () => {
     - All plugin-related requests are excluded from API rate limiting:
       - Static files: `/lib/`, `/icon`, `/main.js`
       - Plugin metadata: `/api/plugins`, `/api/plugins/*`
+    - Dedicated host chat routes such as `/api/hermes/*` are not plugin metadata or static file
+      requests; they should not be added to the plugin rate-limit exemption when implemented.
 
 14. **Use Shadow DOM for style isolation**:
     - Third-party libraries (like Mermaid) may inject global CSS that pollutes other elements
@@ -1363,6 +1398,7 @@ your-plugin/
 | `rag_enhancer` | 增强 RAG 流程 | `pre_embedding`, `post_retrieval`, `before_send`, `custom_settings` |
 | `ui_extension` | 添加 UI 元素 | `toolbar_button`, `custom_action`, `send_intercept` |
 | `message_processor` | 消息处理 | `before_send`, `after_receive`, `transform_input`, `transform_output` |
+| `message_router` | 选择宿主认可的聊天后端路由 | `route_message` |
 | `model_manager` | 管理多个模型配置 | `custom_settings` |
 
 ### 可用钩子列表
@@ -1376,6 +1412,7 @@ your-plugin/
 | `post_retrieval` | RAG 检索后 | `(results, settings)` | `{ success, results }` |
 | `send_intercept` | 发送前拦截器，可在正常聊天发送前完整处理一条消息 | `(context)` | `{ success, handled?, userMessage?, assistantMessage?, clearInput?, clearAttachments?, refreshSkillCatalog? }` |
 | `before_send` | 发送消息前 | `(body)` | `{ success, body }` |
+| `route_message` | 选择宿主认可的聊天路由 | `(body)` | `{ success, route }` |
 | `after_receive` | 收到回复后 | `(message)` | `{ success, content }` |
 | `transform_input` | 转换用户输入 | `(message)` | `{ success, content }` |
 | `transform_output` | 转换 AI 输出 | `(content)` | `{ success, content }` |
@@ -1394,6 +1431,32 @@ your-plugin/
 Backspace/Delete 会一次删除整个 token，后端每次请求最多接受 5 个不同 active skills。宿主会在
 `before_send` 完成后写入 `body.active_skills`，避免普通 hook 意外覆盖用户显式选择的 skills。
 需要处理发送前 skill 列表的插件应使用 `send_intercept` 并读取 `context.activeSkillNames`。
+
+`route_message` 是受限且互斥的路由钩子。正常聊天发送会先执行 `transform_input`，构建兼容
+`/api/chat` 的 body，执行 `before_send`，写入 `active_skills` 等宿主字段，最后才调用
+`route_message`。该钩子只能返回宿主认可的 route id，例如 `{ success: true, route: 'hermes' }`；
+不能返回 URL、path、endpoint、headers、API key 或响应处理指令。宿主会把 route id 映射到同源
+allowlist endpoint，例如 `hermes -> /api/hermes/chat`，且该 endpoint 必须保持与 `/api/chat`
+一致的 JSON/NDJSON contract。多个 route hook 按 priority 检查，但非法或未知 route 结果会被跳过，
+不会抢占路由。不要用 `before_send` 做路由接管；它只用于增强 body。
+
+专用宿主路由可以增加后端拥有的传输元数据。Hermes bridge 会在缺失或 stale chat 解析完成后，
+把最终持久化的 `chat_id` 派生为 `X-Hermes-Session-Id: chatraw-{chat_id}`。插件和请求 body
+不得提供 session id、session key、headers 或其他传输字段。可选的 `X-Hermes-Session-Key`
+以后端 API-key secret 保存，service id 为 `hermes-session-key`；浏览器 UI 只应显示 masked
+状态。ChatRaw 负责本地聊天列表和消息历史，Hermes 负责其 agent/session 状态。
+
+Hermes 可以选择后端保存的执行模式。`apiMode: runs` 表示 Hermes bridge 在同一个
+`/api/hermes/chat` ChatRaw contract 后面创建 `/v1/runs` 并订阅 run events。这个设置不是
+`route_message` 返回值，也不得由请求 body 提供。run tool progress 不会混入最终 assistant
+`content`；ChatRaw 继续使用现有聊天 UI，bridge 只把最终文本、reasoning 和错误状态映射回现有响应
+contract。
+
+Hermes 集成验收应同时覆盖插件生命周期和宿主桥接：安装并启用/禁用插件、打开/关闭 Hermes
+toggle、发送默认模式和 Hermes 路由消息、确认 `before_send` 搜索/RAG 增强仍修改同一个 body、
+新建/切换/删除对话、测试 stream 与 non-stream、在 Runs 模式停止生成，并确认 Save & Check 调用
+`/api/hermes/health` 而不是 `/api/proxy/request`。用户配置和排错说明见
+[`docs/hermes.md`](../docs/hermes.md)。
 
 ### 设置类型
 
@@ -2367,6 +2430,7 @@ button.onclick = async () => {
     - 所有插件相关请求不受 API 请求限流影响：
       - 静态文件：`/lib/`、`/icon`、`/main.js`
       - 插件元数据：`/api/plugins`、`/api/plugins/*`
+    - 专用宿主聊天路由（如 `/api/hermes/*`）不是插件元数据或静态文件请求；实现后端路由时不应加入插件限流豁免。
 
 14. **使用 Shadow DOM 隔离样式**：
     - 第三方库（如 Mermaid）可能注入全局 CSS 污染其他元素
