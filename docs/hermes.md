@@ -34,7 +34,7 @@ The default ChatRaw Hermes settings are:
 4. Save the Hermes base URL and model name.
 5. Enter the Hermes `API_SERVER_KEY`. Empty API key input does not delete an existing key; use **Clear key** to remove it.
 6. Optionally enter a Session Key. Empty session key input does not delete an existing key; use **Clear session key** to remove it.
-7. Use **Save & Check** to save the settings and call `/api/hermes/health`.
+7. Use **Save** to persist the settings, then use **Check** to call `/api/hermes/health` with the saved configuration.
 8. Turn on the Hermes toolbar toggle when a message should route through Hermes. The toggle is browser-local and defaults to off.
 
 ## Execution Modes
@@ -72,8 +72,8 @@ The execution mode is saved in the backend plugin settings as `apiMode`. It is n
 - Enable and disable the ChatRaw plugin; the toolbar button should appear and disappear with the plugin state.
 - Toggle Hermes off; a normal message should still use the default ChatRaw backend.
 - Toggle Hermes on; a normal message should route to `/api/hermes/chat`.
-- Save base URL, model, API key, optional Session Key, and use **Save & Check**.
-- Confirm **Save & Check** calls `/api/hermes/health` and not `/api/proxy/request`.
+- Save base URL, model, API key, and optional Session Key with **Save**, then use **Check**.
+- Confirm **Check** calls `/api/hermes/health` and not `/api/proxy/request`.
 - Test stream and non-stream chat settings.
 - Test `chat_completions` and `runs` modes.
 - Test a search/RAG-style `before_send` plugin together with Hermes routing; the enhanced body should still reach the Hermes bridge.
@@ -116,7 +116,7 @@ ChatRaw 的 Hermes 默认设置为：
 4. 保存 Hermes base URL 和 model name。
 5. 输入 Hermes `API_SERVER_KEY`。API key 输入框留空不会删除已有 key；需要点击 **Clear key** 才会清除。
 6. 可选输入 Session Key。Session key 输入框留空不会删除已有 key；需要点击 **Clear session key** 才会清除。
-7. 点击 **Save & Check** 保存配置并调用 `/api/hermes/health`。
+7. 点击 **保存** 保存配置，然后点击 **检查** 使用已保存配置调用 `/api/hermes/health`。
 8. 需要让某条消息走 Hermes 时，打开输入框工具栏中的 Hermes toggle。该 toggle 是浏览器本地偏好，默认关闭。
 
 ## 执行模式
@@ -154,8 +154,8 @@ ChatRaw 的 Hermes 默认设置为：
 - 启用和禁用 ChatRaw 插件；工具栏按钮应随插件状态出现和消失。
 - 关闭 Hermes toggle；普通消息仍走默认 ChatRaw 后端。
 - 打开 Hermes toggle；普通消息应路由到 `/api/hermes/chat`。
-- 保存 base URL、model、API key、可选 Session Key，并点击 **Save & Check**。
-- 确认 **Save & Check** 调用 `/api/hermes/health`，不调用 `/api/proxy/request`。
+- 点击 **保存** 保存 base URL、model、API key 和可选 Session Key，然后点击 **检查**。
+- 确认 **检查** 调用 `/api/hermes/health`，不调用 `/api/proxy/request`。
 - 测试 stream 和 non-stream 聊天设置。
 - 测试 `chat_completions` 和 `runs` 模式。
 - 与搜索/RAG 类 `before_send` 插件同时启用；增强后的 body 应继续到达 Hermes bridge。

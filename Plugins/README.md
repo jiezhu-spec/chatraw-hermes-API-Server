@@ -167,7 +167,7 @@ contract.
 Hermes integration QA should cover the plugin lifecycle and the host bridge together: install and
 enable/disable the plugin, toggle Hermes on/off, send default and Hermes-routed messages, verify
 `before_send` search/RAG enhancers still modify the same body, switch/new/delete chats, test stream and
-non-stream modes, stop generation in Runs mode, and confirm Save & Check calls `/api/hermes/health`
+non-stream modes, stop generation in Runs mode, save Hermes settings, and confirm **Check** calls `/api/hermes/health`
 instead of `/api/proxy/request`. User setup and troubleshooting are documented in
 [`docs/hermes.md`](../docs/hermes.md).
 
@@ -1455,8 +1455,8 @@ contract。
 
 Hermes 集成验收应同时覆盖插件生命周期和宿主桥接：安装并启用/禁用插件、打开/关闭 Hermes
 toggle、发送默认模式和 Hermes 路由消息、确认 `before_send` 搜索/RAG 增强仍修改同一个 body、
-新建/切换/删除对话、测试 stream 与 non-stream、在 Runs 模式停止生成，并确认 Save & Check 调用
-`/api/hermes/health` 而不是 `/api/proxy/request`。用户配置和排错说明见
+新建/切换/删除对话、测试 stream 与 non-stream、在 Runs 模式停止生成、保存 Hermes 设置，并确认
+**检查** 调用 `/api/hermes/health` 而不是 `/api/proxy/request`。用户配置和排错说明见
 [`docs/hermes.md`](../docs/hermes.md)。
 
 ### 设置类型
