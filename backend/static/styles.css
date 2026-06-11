@@ -2048,8 +2048,8 @@ input[type=range]::-webkit-slider-thumb:hover {
 
 /* Toast */
 .toast {
-    position: fixed;
-    bottom: 32px;
+    position: absolute;
+    bottom: max(176px, env(safe-area-inset-bottom) + 156px);
     left: 50%;
     transform: translateX(-50%);
     padding: 12px 24px;
@@ -2066,7 +2066,7 @@ input[type=range]::-webkit-slider-thumb:hover {
 .toast.error { background: var(--error-color); color: white; }
 
 @keyframes toastPop {
-    from { opacity: 0; transform: translate(-50%, 20px) scale(0.9); }
+    from { opacity: 0; transform: translate(-50%, 12px) scale(0.9); }
     to { opacity: 1; transform: translate(-50%, 0) scale(1); }
 }
 
@@ -2434,7 +2434,7 @@ input[type=range]::-webkit-slider-thumb:hover {
     
     /* Toast positioning for mobile */
     .toast {
-        bottom: max(24px, env(safe-area-inset-bottom) + 16px);
+        bottom: max(136px, env(safe-area-inset-bottom) + 116px);
         left: 16px;
         right: 16px;
         transform: none;

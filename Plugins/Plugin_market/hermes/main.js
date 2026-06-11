@@ -14,6 +14,9 @@
     const DEFAULT_BASE_URL = 'http://127.0.0.1:8642/v1';
     const DEFAULT_MODEL = 'hermes-agent';
     const DEFAULT_API_MODE = 'chat_completions';
+    const REMOTE_URLS_MAX_LENGTH = 4000;
+    const REMOTE_URL_MAX_LENGTH = 300;
+    const REMOTE_URLS_MAX_COUNT = 20;
 
     if (!ChatRaw || !ChatRaw.hooks || !ChatRaw.ui || !ChatRaw.storage) {
         console.error('[Hermes] ChatRaw plugin APIs are not available');
@@ -31,9 +34,49 @@
             enabled: 'Hermes mode enabled',
             disabled: 'Hermes mode disabled',
             title: 'Hermes Router',
-            description: 'Route messages to a local Hermes API server through ChatRaw\'s secure backend bridge.',
+            description: 'Route messages to a Hermes API server through ChatRaw\'s secure backend bridge.',
             baseUrl: 'Hermes base URL',
-            baseUrlHint: 'Only loopback URLs are accepted by the backend bridge.',
+            baseUrlHint: 'Loopback URLs are allowed by default. Remote URLs must be enabled in the advanced section below.',
+            remoteSectionTitle: 'Remote Base URL access',
+            allowedRemoteBaseUrls: 'Allowed remote base URLs',
+            allowedRemoteBaseUrlsHint: 'One URL per line or comma-separated. Only listed remote Hermes base URLs are allowed after risk confirmation.',
+            remoteUrlsReview: 'Review and enable remote URLs',
+            remoteUrlsConfirmed: 'Remote URLs confirmed. Save settings to apply.',
+            remoteUrlsNotConfirmed: 'Remote URLs require risk confirmation before use.',
+            remoteUrlsEmpty: 'No remote URLs listed',
+            remoteUrlsInvalid: 'Invalid remote URL list',
+            remoteUrlsRequired: 'Add at least one remote Base URL before enabling remote access.',
+            remoteUrlsBaseUrlIsLocal: 'Current Base URL is local and does not require remote access.',
+            remoteUrlsBaseUrlInvalid: 'Current Base URL is not a valid remote URL.',
+            remoteWarningTitle: 'Enable remote Hermes address access',
+            remoteWarningConfirm: 'Confirm remote address access',
+            remoteWarningCancel: 'Cancel',
+            remoteWarningReadAll: 'Please read the full warning',
+            remoteWarningNeedCheck: 'Please confirm you understand the risk',
+            remoteWarningConfirmText: 'I confirm these remote addresses are controlled by me or trusted, and I understand chat content, API keys, and Hermes tool execution boundaries may change.',
+            remoteWarningBody: `You are enabling access to non-local Hermes Base URLs. After enabling, the ChatRaw backend will be allowed to connect to addresses listed in "Allowed remote base URLs", such as LAN, intranet, or remote server addresses.
+
+Please confirm you understand these risks before continuing:
+
+1. Remote Hermes is not a local service
+When the Base URL points to a non-localhost / 127.0.0.1 / ::1 address, the Hermes agent, tools, file access, command execution, and MCP capabilities may run on a remote machine instead of the machine currently running ChatRaw.
+
+2. Chat content will be sent to that address
+Messages routed through Hermes, system prompts, context, document snippets, search/RAG augmented content, and related metadata may be sent to the remote Hermes service you entered.
+
+3. API Server Key will also be sent to that address
+If you saved a Hermes API Server Key, the ChatRaw backend will send it as an Authorization Bearer token to the matching remote Base URL. Only enter service addresses you control and trust.
+
+4. The address may access internal network resources
+Remote address access lets the ChatRaw backend send requests to specified intranet or LAN addresses. Do not enter routers, NAS devices, database consoles, cloud metadata services, proxy services, unknown tunnels, or any address you do not fully trust.
+
+5. HTTP plaintext connections may be observed
+If the remote address uses http://, devices on the same network or intermediate nodes may see request content. Use HTTP only on networks you trust; HTTPS, VPN, or SSH tunnels are recommended.
+
+6. Add only necessary addresses
+The allowlist should contain only the Hermes API Server Base URLs you currently need. After testing or when no longer needed, delete unnecessary addresses and disable remote access.
+
+After enabling, ChatRaw only allows remote Hermes Base URLs explicitly listed in the allowlist. If you modify the allowlist, you must confirm these risks again.`,
             model: 'Model name',
             apiMode: 'Execution mode',
             apiModeChat: 'Chat Completions',
@@ -68,9 +111,49 @@
             enabled: 'Hermes 模式已开启',
             disabled: 'Hermes 模式已关闭',
             title: 'Hermes 路由',
-            description: '通过 ChatRaw 安全后端桥接，将消息路由到本机 Hermes API Server。',
+            description: '通过 ChatRaw 安全后端桥接，将消息路由到 Hermes API Server。',
             baseUrl: 'Hermes 基础 URL',
-            baseUrlHint: '后端桥接只接受 loopback URL。',
+            baseUrlHint: '本机地址默认允许。远程地址需在下方高级放行中填写并确认风险。',
+            remoteSectionTitle: '远程 Base URL 放行',
+            allowedRemoteBaseUrls: '允许的远程 Base URL',
+            allowedRemoteBaseUrlsHint: '一行一个或用逗号分隔。远程 Hermes Base URL 只有列入此处并确认风险后才会放行。',
+            remoteUrlsReview: '查看风险并启用远程地址放行',
+            remoteUrlsConfirmed: '远程地址已确认。请保存设置以生效。',
+            remoteUrlsNotConfirmed: '远程地址使用前需要先确认风险。',
+            remoteUrlsEmpty: '未填写远程地址',
+            remoteUrlsInvalid: '远程地址列表无效',
+            remoteUrlsRequired: '启用远程访问前，请至少填写一个远程 Base URL。',
+            remoteUrlsBaseUrlIsLocal: '当前 Base URL 是本机地址，不需要远程放行。',
+            remoteUrlsBaseUrlInvalid: '当前 Base URL 不是有效的远程地址。',
+            remoteWarningTitle: '启用远程 Hermes 地址放行',
+            remoteWarningConfirm: '确认启用远程地址放行',
+            remoteWarningCancel: '取消',
+            remoteWarningReadAll: '请先阅读完整警示内容',
+            remoteWarningNeedCheck: '请确认你已理解风险',
+            remoteWarningConfirmText: '我确认这些远程地址由我控制或信任，并理解聊天内容、API key 和 Hermes 工具执行边界可能发生变化。',
+            remoteWarningBody: `你正在启用非本机 Hermes Base URL 访问。启用后，ChatRaw 后端将允许连接你在“允许的远程 Base URL”中填写的地址，例如局域网、内网或远程服务器地址。
+
+请在继续前确认你理解以下风险：
+
+1. 远程 Hermes 不是本机服务
+当 Base URL 指向非 localhost / 127.0.0.1 / ::1 地址时，Hermes agent、工具、文件访问、命令执行和 MCP 能力可能发生在远程机器上，而不是当前运行 ChatRaw 的机器上。
+
+2. 聊天内容会发送到该地址
+通过 Hermes 路由发送的消息、系统提示词、上下文、文档片段、搜索/RAG 增强内容和相关元数据，可能会被发送到你填写的远程 Hermes 服务。
+
+3. API Server Key 也会发送到该地址
+如果你保存了 Hermes API Server Key，ChatRaw 后端会把它作为 Authorization Bearer token 发送给匹配的远程 Base URL。请只填写你控制并信任的服务地址。
+
+4. 该地址可能访问内网资源
+远程地址放行会让 ChatRaw 后端向指定的内网或局域网地址发起请求。不要填写路由器、NAS、数据库控制台、云元数据服务、代理服务、未知隧道或任何你不完全信任的地址。
+
+5. HTTP 明文连接可能被监听
+如果远程地址使用 http://，同一网络中的设备或中间节点可能看到请求内容。只有在你信任该网络时才使用 HTTP；更推荐使用 HTTPS、VPN 或 SSH tunnel。
+
+6. 只添加必要地址
+允许列表应只包含你当前需要使用的 Hermes API Server Base URL。测试完成或不再使用后，请删除不需要的地址并关闭远程放行。
+
+启用后，ChatRaw 只会放行明确写在允许列表里的远程 Base URL。修改允许列表后，需要重新确认这些风险。`,
             model: '模型名称',
             apiMode: '执行模式',
             apiModeChat: 'Chat Completions',
@@ -106,11 +189,15 @@
     let settings = {
         baseUrl: DEFAULT_BASE_URL,
         model: DEFAULT_MODEL,
-        apiMode: DEFAULT_API_MODE
+        apiMode: DEFAULT_API_MODE,
+        allowedRemoteBaseUrls: '',
+        remoteBaseUrlWarningAccepted: false,
+        remoteBaseUrlWarningAcceptedFor: ''
     };
     let maskedApiKey = '';
     let maskedSessionKey = '';
     let settingsListener = null;
+    let remoteWarningOverlay = null;
 
     function t(key) {
         const lang = ChatRaw.utils?.getLanguage?.() || 'en';
@@ -124,6 +211,59 @@
             .replace(/>/g, '&gt;')
             .replace(/"/g, '&quot;')
             .replace(/'/g, '&#39;');
+    }
+
+    function normalizeRemoteBaseUrl(value) {
+        const raw = String(value || '').trim();
+        if (raw.length > REMOTE_URL_MAX_LENGTH) {
+            throw new Error(t('remoteUrlsInvalid'));
+        }
+
+        let parsed;
+        try {
+            parsed = new URL(raw);
+        } catch (error) {
+            throw new Error(t('remoteUrlsInvalid'));
+        }
+
+        if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+            throw new Error(t('remoteUrlsInvalid'));
+        }
+        if (parsed.username || parsed.password || parsed.search || parsed.hash) {
+            throw new Error(t('remoteUrlsInvalid'));
+        }
+
+        const path = parsed.pathname === '/' ? '' : parsed.pathname.replace(/\/+$/, '');
+        return `${parsed.protocol}//${parsed.host.toLowerCase()}${path}`;
+    }
+
+    function isLoopbackBaseUrl(value) {
+        try {
+            const parsed = new URL(String(value || '').trim());
+            let hostname = parsed.hostname.toLowerCase();
+            if (hostname.startsWith('[') && hostname.endsWith(']')) {
+                hostname = hostname.slice(1, -1);
+            }
+            return hostname === 'localhost' || hostname === '::1' || /^127(?:\.\d{1,3}){3}$/.test(hostname);
+        } catch (error) {
+            return false;
+        }
+    }
+
+    function canonicalizeRemoteBaseUrls(value) {
+        const raw = String(value || '');
+        if (raw.length > REMOTE_URLS_MAX_LENGTH) {
+            throw new Error(t('remoteUrlsInvalid'));
+        }
+
+        const entries = raw.split(/[\n,]+/).map(item => item.trim()).filter(Boolean);
+        if (entries.length > REMOTE_URLS_MAX_COUNT) {
+            throw new Error(t('remoteUrlsInvalid'));
+        }
+
+        const unique = Array.from(new Set(entries.map(normalizeRemoteBaseUrl)));
+        unique.sort();
+        return unique.join('\n');
     }
 
     function getAppState() {
@@ -169,10 +309,14 @@
         if (!res.ok) return;
         const plugins = await res.json();
         const plugin = plugins.find(item => item.id === PLUGIN_ID);
+        const saved = plugin?.settings_values || {};
         settings = {
-            baseUrl: plugin?.settings_values?.baseUrl || DEFAULT_BASE_URL,
-            model: plugin?.settings_values?.model || DEFAULT_MODEL,
-            apiMode: plugin?.settings_values?.apiMode || DEFAULT_API_MODE
+            baseUrl: saved.baseUrl || DEFAULT_BASE_URL,
+            model: saved.model || DEFAULT_MODEL,
+            apiMode: saved.apiMode || DEFAULT_API_MODE,
+            allowedRemoteBaseUrls: saved.allowedRemoteBaseUrls || '',
+            remoteBaseUrlWarningAccepted: saved.remoteBaseUrlWarningAccepted === true,
+            remoteBaseUrlWarningAcceptedFor: saved.remoteBaseUrlWarningAcceptedFor || ''
         };
     }
 
@@ -190,6 +334,7 @@
         const baseUrlInput = document.getElementById('hermes-base-url');
         const modelInput = document.getElementById('hermes-model');
         const apiModeInput = document.getElementById('hermes-api-mode');
+        const allowedRemoteInput = document.getElementById('hermes-allowed-remote-base-urls');
         const keyInput = document.getElementById('hermes-api-key');
         const sessionKeyInput = document.getElementById('hermes-session-key');
         const apiMode = apiModeInput?.value === 'runs' ? 'runs' : DEFAULT_API_MODE;
@@ -197,6 +342,7 @@
             baseUrl: (baseUrlInput?.value || '').trim() || DEFAULT_BASE_URL,
             model: (modelInput?.value || '').trim() || DEFAULT_MODEL,
             apiMode,
+            allowedRemoteBaseUrls: allowedRemoteInput?.value || '',
             apiKey: (keyInput?.value || '').trim(),
             sessionKey: (sessionKeyInput?.value || '').trim()
         };
@@ -204,10 +350,18 @@
 
     async function saveSettings() {
         const next = readSettingsForm();
+        const canonicalAllowed = canonicalizeRemoteBaseUrls(next.allowedRemoteBaseUrls);
+        const remoteAccepted = Boolean(
+            settings.remoteBaseUrlWarningAccepted &&
+            settings.remoteBaseUrlWarningAcceptedFor === canonicalAllowed
+        );
         settings = {
             baseUrl: next.baseUrl,
             model: next.model,
-            apiMode: next.apiMode
+            apiMode: next.apiMode,
+            allowedRemoteBaseUrls: next.allowedRemoteBaseUrls,
+            remoteBaseUrlWarningAccepted: remoteAccepted,
+            remoteBaseUrlWarningAcceptedFor: remoteAccepted ? canonicalAllowed : ''
         };
 
         const settingsRes = await fetch(`/api/plugins/${encodeURIComponent(PLUGIN_ID)}/settings`, {
@@ -336,7 +490,162 @@
         }
     }
 
+    function updateRemoteUrlStatus() {
+        const status = document.getElementById('hermes-remote-url-status');
+        if (!status) return;
+
+        try {
+            const value = document.getElementById('hermes-allowed-remote-base-urls')?.value || '';
+            const canonicalAllowed = canonicalizeRemoteBaseUrls(value);
+            status.style.color = 'var(--text-secondary)';
+            if (!canonicalAllowed) {
+                status.textContent = t('remoteUrlsEmpty');
+                return;
+            }
+            if (
+                settings.remoteBaseUrlWarningAccepted &&
+                settings.remoteBaseUrlWarningAcceptedFor === canonicalAllowed
+            ) {
+                status.textContent = t('remoteUrlsConfirmed');
+            } else {
+                status.textContent = t('remoteUrlsNotConfirmed');
+            }
+        } catch (error) {
+            status.textContent = error.message || t('remoteUrlsInvalid');
+            status.style.color = 'var(--danger-color, #dc2626)';
+        }
+    }
+
+    function setRemoteUrlStatus(message, type) {
+        const status = document.getElementById('hermes-remote-url-status');
+        if (!status) return;
+        status.textContent = message || '';
+        status.style.color = type === 'error' ? 'var(--danger-color, #dc2626)' : 'var(--text-secondary)';
+    }
+
+    function closeRemoteWarningModal() {
+        if (remoteWarningOverlay) {
+            remoteWarningOverlay.remove();
+            remoteWarningOverlay = null;
+        }
+    }
+
+    function openRemoteWarningModal() {
+        const next = readSettingsForm();
+        let canonicalAllowed = '';
+        try {
+            canonicalAllowed = canonicalizeRemoteBaseUrls(next.allowedRemoteBaseUrls);
+        } catch (error) {
+            setStatus(error.message || t('remoteUrlsInvalid'), 'error');
+            updateRemoteUrlStatus();
+            return;
+        }
+
+        if (!canonicalAllowed) {
+            if (isLoopbackBaseUrl(next.baseUrl)) {
+                setRemoteUrlStatus(t('remoteUrlsBaseUrlIsLocal'));
+                return;
+            }
+            try {
+                normalizeRemoteBaseUrl(next.baseUrl);
+            } catch (error) {
+                setRemoteUrlStatus(t('remoteUrlsBaseUrlInvalid'), 'error');
+                return;
+            }
+            setRemoteUrlStatus(t('remoteUrlsRequired'), 'error');
+            return;
+        }
+
+        closeRemoteWarningModal();
+        const bodyHtml = escapeHtml(t('remoteWarningBody')).replace(/\n/g, '<br>');
+        remoteWarningOverlay = document.createElement('div');
+        remoteWarningOverlay.setAttribute('role', 'dialog');
+        remoteWarningOverlay.setAttribute('aria-modal', 'true');
+        remoteWarningOverlay.style.cssText = [
+            'position:fixed',
+            'inset:0',
+            'z-index:10000',
+            'display:flex',
+            'align-items:center',
+            'justify-content:center',
+            'padding:24px',
+            'background:rgba(0,0,0,0.55)'
+        ].join(';');
+        remoteWarningOverlay.innerHTML = `
+            <div style="width:min(720px, 100%); max-height:min(760px, calc(100vh - 48px)); display:grid; grid-template-rows:auto minmax(180px, 1fr) auto; background:var(--bg-primary); border:1px solid var(--border-color); border-radius:var(--radius-lg, 12px); box-shadow:0 24px 80px rgba(0,0,0,0.28); overflow:hidden;">
+                <div style="padding:18px 22px; border-bottom:1px solid var(--border-color);">
+                    <h3 style="margin:0; font-size:1.05rem; font-weight:600;">${escapeHtml(t('remoteWarningTitle'))}</h3>
+                </div>
+                <div id="hermes-remote-warning-scroll" style="overflow:auto; padding:18px 22px; color:var(--text-primary); font-size:0.9rem; line-height:1.65;">
+                    ${bodyHtml}
+                </div>
+                <div style="display:grid; gap:12px; padding:16px 22px; border-top:1px solid var(--border-color); background:var(--bg-secondary, var(--bg-primary));">
+                    <label style="display:flex; align-items:flex-start; gap:10px; color:var(--text-primary); font-size:0.88rem; line-height:1.45;">
+                        <input id="hermes-remote-warning-checkbox" type="checkbox" style="margin-top:3px;">
+                        <span>${escapeHtml(t('remoteWarningConfirmText'))}</span>
+                    </label>
+                    <div id="hermes-remote-warning-status" style="color:var(--text-secondary); font-size:0.82rem;">${escapeHtml(t('remoteWarningReadAll'))}</div>
+                    <div style="display:flex; justify-content:flex-end; gap:10px;">
+                        <button id="hermes-remote-warning-cancel" class="btn-secondary" type="button" style="padding:10px 16px; border:1px solid var(--border-color); border-radius:var(--radius-sm); background:transparent; cursor:pointer;">${escapeHtml(t('remoteWarningCancel'))}</button>
+                        <button id="hermes-remote-warning-confirm" class="btn-primary" type="button" disabled style="padding:10px 16px; border:none; border-radius:var(--radius-sm); background:var(--text-primary); color:var(--bg-primary); cursor:not-allowed; font-weight:500; opacity:0.55;">${escapeHtml(t('remoteWarningConfirm'))}</button>
+                    </div>
+                </div>
+            </div>
+        `;
+        document.body.appendChild(remoteWarningOverlay);
+
+        const scrollBox = document.getElementById('hermes-remote-warning-scroll');
+        const checkbox = document.getElementById('hermes-remote-warning-checkbox');
+        const confirmButton = document.getElementById('hermes-remote-warning-confirm');
+        const warningStatus = document.getElementById('hermes-remote-warning-status');
+
+        function updateConfirmState() {
+            const readAll = scrollBox.scrollTop + scrollBox.clientHeight >= scrollBox.scrollHeight - 4;
+            const checked = checkbox.checked;
+            confirmButton.disabled = !(readAll && checked);
+            confirmButton.style.cursor = confirmButton.disabled ? 'not-allowed' : 'pointer';
+            confirmButton.style.opacity = confirmButton.disabled ? '0.55' : '1';
+            if (!readAll) {
+                warningStatus.textContent = t('remoteWarningReadAll');
+            } else if (!checked) {
+                warningStatus.textContent = t('remoteWarningNeedCheck');
+            } else {
+                warningStatus.textContent = '';
+            }
+        }
+
+        scrollBox?.addEventListener('scroll', updateConfirmState);
+        checkbox?.addEventListener('change', updateConfirmState);
+        document.getElementById('hermes-remote-warning-cancel')?.addEventListener('click', closeRemoteWarningModal);
+        confirmButton?.addEventListener('click', () => {
+            if (confirmButton.disabled) return;
+            settings.allowedRemoteBaseUrls = next.allowedRemoteBaseUrls;
+            settings.remoteBaseUrlWarningAccepted = true;
+            settings.remoteBaseUrlWarningAcceptedFor = canonicalAllowed;
+            closeRemoteWarningModal();
+            updateRemoteUrlStatus();
+            setStatus(t('remoteUrlsConfirmed'));
+        });
+        updateConfirmState();
+    }
+
+    function toggleRemoteSection() {
+        const toggle = document.getElementById('hermes-remote-section-toggle');
+        const content = document.getElementById('hermes-remote-section-content');
+        if (!toggle || !content) return;
+        const expanded = toggle.getAttribute('aria-expanded') === 'true';
+        toggle.setAttribute('aria-expanded', expanded ? 'false' : 'true');
+        content.style.display = expanded ? 'none' : 'grid';
+        const icon = toggle.querySelector('[data-hermes-chevron]');
+        if (icon) {
+            icon.style.transform = expanded
+                ? 'translateY(-60%) rotate(45deg)'
+                : 'translateY(-40%) rotate(225deg)';
+        }
+    }
+
     function createSettingsMarkup() {
+        const remoteSectionExpanded = false;
         return `
             <div class="hermes-settings" style="padding:0;">
                 <div style="padding:20px 24px; border-bottom:1px solid var(--border-color);">
@@ -349,16 +658,36 @@
                         <input id="hermes-base-url" type="text" class="input-minimal" style="width:100%; padding:10px 12px; border:1px solid var(--border-color); border-radius:var(--radius-sm); background:var(--bg-primary);">
                         <span style="color:var(--text-secondary); font-size:0.82rem;">${escapeHtml(t('baseUrlHint'))}</span>
                     </label>
+                    <div id="hermes-remote-section" style="border:1px solid var(--border-color); border-radius:var(--radius-sm); background:var(--bg-primary); overflow:hidden;">
+                        <button id="hermes-remote-section-toggle" type="button" aria-expanded="${remoteSectionExpanded ? 'true' : 'false'}" style="position:relative; width:100%; height:40px; display:flex; align-items:center; gap:12px; padding:10px 40px 10px 12px; border:none; background:transparent; color:var(--text-primary); cursor:pointer; font:inherit; font-size:16px; line-height:normal; text-align:left;">
+                            <span>${escapeHtml(t('remoteSectionTitle'))}</span>
+                            <span data-hermes-chevron aria-hidden="true" style="position:absolute; right:13px; top:50%; width:8px; height:8px; border-right:2px solid var(--text-primary); border-bottom:2px solid var(--text-primary); transform:${remoteSectionExpanded ? 'translateY(-40%) rotate(225deg)' : 'translateY(-60%) rotate(45deg)'}; transform-origin:center; pointer-events:none;"></span>
+                        </button>
+                        <div id="hermes-remote-section-content" style="display:${remoteSectionExpanded ? 'grid' : 'none'}; gap:12px; padding:0 14px 14px 14px;">
+                            <label style="display:grid; gap:8px;">
+                                <span style="font-weight:500;">${escapeHtml(t('allowedRemoteBaseUrls'))}</span>
+                                <textarea id="hermes-allowed-remote-base-urls" class="input-minimal" rows="4" style="width:100%; min-height:92px; resize:vertical; padding:10px 12px; border:1px solid var(--border-color); border-radius:var(--radius-sm); background:var(--bg-primary); font-family:inherit;"></textarea>
+                                <span style="color:var(--text-secondary); font-size:0.82rem;">${escapeHtml(t('allowedRemoteBaseUrlsHint'))}</span>
+                            </label>
+                            <div style="display:flex; align-items:center; justify-content:space-between; gap:12px;">
+                                <span id="hermes-remote-url-status" style="color:var(--text-secondary); font-size:0.86rem;"></span>
+                                <button id="hermes-review-remote-urls" class="btn-secondary" type="button" style="padding:8px 14px; border:1px solid var(--border-color); border-radius:var(--radius-sm); background:transparent; cursor:pointer; white-space:nowrap;">${escapeHtml(t('remoteUrlsReview'))}</button>
+                            </div>
+                        </div>
+                    </div>
                     <label style="display:grid; gap:8px;">
                         <span style="font-weight:500;">${escapeHtml(t('model'))}</span>
                         <input id="hermes-model" type="text" class="input-minimal" style="width:100%; padding:10px 12px; border:1px solid var(--border-color); border-radius:var(--radius-sm); background:var(--bg-primary);">
                     </label>
                     <label style="display:grid; gap:8px;">
                         <span style="font-weight:500;">${escapeHtml(t('apiMode'))}</span>
-                        <select id="hermes-api-mode" class="input-minimal" style="width:100%; padding:10px 12px; border:1px solid var(--border-color); border-radius:var(--radius-sm); background:var(--bg-primary);">
-                            <option value="chat_completions">${escapeHtml(t('apiModeChat'))}</option>
-                            <option value="runs">${escapeHtml(t('apiModeRuns'))}</option>
-                        </select>
+                        <div style="position:relative; width:100%;">
+                            <select id="hermes-api-mode" class="input-minimal" style="width:100%; height:42px; appearance:none; -webkit-appearance:none; padding:10px 40px 10px 12px; border:1px solid var(--border-color); border-radius:var(--radius-sm); background:var(--bg-primary); font-size:16px; line-height:normal;">
+                                <option value="chat_completions">${escapeHtml(t('apiModeChat'))}</option>
+                                <option value="runs">${escapeHtml(t('apiModeRuns'))}</option>
+                            </select>
+                            <span aria-hidden="true" style="position:absolute; right:14px; top:50%; width:8px; height:8px; border-right:2px solid var(--text-primary); border-bottom:2px solid var(--text-primary); transform:translateY(-60%) rotate(45deg); transform-origin:center; pointer-events:none;"></span>
+                        </div>
                         <span style="color:var(--text-secondary); font-size:0.82rem;">${escapeHtml(t('apiModeHint'))}</span>
                     </label>
                 </div>
@@ -403,20 +732,26 @@
         const baseUrlInput = document.getElementById('hermes-base-url');
         const modelInput = document.getElementById('hermes-model');
         const apiModeInput = document.getElementById('hermes-api-mode');
+        const allowedRemoteInput = document.getElementById('hermes-allowed-remote-base-urls');
         const keyInput = document.getElementById('hermes-api-key');
         const sessionKeyInput = document.getElementById('hermes-session-key');
         if (baseUrlInput) baseUrlInput.value = settings.baseUrl || DEFAULT_BASE_URL;
+        if (allowedRemoteInput) allowedRemoteInput.value = settings.allowedRemoteBaseUrls || '';
         if (modelInput) modelInput.value = settings.model || DEFAULT_MODEL;
         if (apiModeInput) apiModeInput.value = settings.apiMode === 'runs' ? 'runs' : DEFAULT_API_MODE;
         if (keyInput) keyInput.placeholder = maskedApiKey ? t('apiKeyPlaceholder') : '';
         if (sessionKeyInput) sessionKeyInput.placeholder = maskedSessionKey ? t('sessionKeyPlaceholder') : '';
         updateApiKeyStatus();
+        updateRemoteUrlStatus();
 
         document.getElementById('hermes-cancel')?.addEventListener('click', closeSettings);
         document.getElementById('hermes-check')?.addEventListener('click', handleCheck);
         document.getElementById('hermes-save')?.addEventListener('click', () => handleSave(true));
         document.getElementById('hermes-clear-key')?.addEventListener('click', handleClearKey);
         document.getElementById('hermes-clear-session-key')?.addEventListener('click', handleClearSessionKey);
+        document.getElementById('hermes-remote-section-toggle')?.addEventListener('click', toggleRemoteSection);
+        allowedRemoteInput?.addEventListener('input', updateRemoteUrlStatus);
+        document.getElementById('hermes-review-remote-urls')?.addEventListener('click', openRemoteWarningModal);
     }
 
     async function openSettings() {
@@ -480,6 +815,7 @@
 
     window._chatrawHermesPlugin = {
         destroy() {
+            closeRemoteWarningModal();
             if (settingsListener) {
                 window.removeEventListener('plugin-settings-open', settingsListener);
                 settingsListener = null;

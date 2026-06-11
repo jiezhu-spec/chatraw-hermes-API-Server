@@ -3817,6 +3817,9 @@ HERMES_DEFAULT_MODEL = "hermes-agent"
 HERMES_API_MODE_CHAT_COMPLETIONS = "chat_completions"
 HERMES_API_MODE_RUNS = "runs"
 HERMES_API_MODES = {HERMES_API_MODE_CHAT_COMPLETIONS, HERMES_API_MODE_RUNS}
+HERMES_REMOTE_URLS_MAX_LENGTH = 4000
+HERMES_REMOTE_URL_MAX_LENGTH = 300
+HERMES_REMOTE_URLS_MAX_COUNT = 20
 
 # Plugin upload size limit (10MB)
 MAX_PLUGIN_SIZE = int(os.environ.get("MAX_PLUGIN_SIZE", str(10 * 1024 * 1024)))
@@ -4023,8 +4026,10 @@ def validate_hermes_request_origin(request: Request):
     raise HTTPException(status_code=403, detail="Cross-origin Hermes bridge requests are not allowed")
 
 
-def validate_hermes_base_url(base_url: str) -> str:
+def _normalize_hermes_base_url(base_url: str) -> Tuple[str, Any]:
     raw_url = str(base_url or "").strip()
+    if len(raw_url) > HERMES_REMOTE_URL_MAX_LENGTH:
+        raise HermesBridgeError("Hermes base URL is too long")
     try:
         parsed = urlparse(raw_url)
     except Exception:
@@ -4038,17 +4043,74 @@ def validate_hermes_base_url(base_url: str) -> str:
         raise HermesBridgeError("Hermes base URL must not include credentials")
     if parsed.query or parsed.fragment:
         raise HermesBridgeError("Hermes base URL must not include query or fragment")
+    try:
+        port = parsed.port
+    except ValueError:
+        raise HermesBridgeError("Invalid Hermes base URL")
 
+    scheme = parsed.scheme.lower()
     hostname = parsed.hostname.lower()
-    if hostname != "localhost":
-        try:
-            address = ipaddress.ip_address(hostname)
-        except ValueError:
-            raise HermesBridgeError("Hermes base URL host must be localhost or a loopback IP")
-        if not address.is_loopback:
-            raise HermesBridgeError("Hermes base URL must point to a loopback address")
+    if ":" in hostname and not hostname.startswith("["):
+        host = f"[{hostname}]"
+    else:
+        host = hostname
+    is_default_port = (scheme == "http" and port == 80) or (scheme == "https" and port == 443)
+    if port is not None and not is_default_port:
+        host = f"{host}:{port}"
+    path = (parsed.path or "").rstrip("/")
+    return f"{scheme}://{host}{path}", parsed
 
-    return raw_url.rstrip("/")
+
+def _is_hermes_loopback_base_url(parsed) -> bool:
+    hostname = parsed.hostname.lower()
+    if hostname == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(hostname).is_loopback
+    except ValueError:
+        return False
+
+
+def parse_hermes_allowed_remote_base_urls(value: Any) -> Tuple[List[str], str]:
+    raw_value = "" if value is None else str(value)
+    if len(raw_value) > HERMES_REMOTE_URLS_MAX_LENGTH:
+        raise HermesBridgeError("Allowed remote Hermes base URLs are too long")
+
+    entries = [item.strip() for item in re.split(r"[\n,]+", raw_value) if item.strip()]
+    if len(entries) > HERMES_REMOTE_URLS_MAX_COUNT:
+        raise HermesBridgeError("Too many allowed remote Hermes base URLs")
+
+    normalized = []
+    for item in entries:
+        if len(item) > HERMES_REMOTE_URL_MAX_LENGTH:
+            raise HermesBridgeError("Allowed remote Hermes base URL is too long")
+        url, _ = _normalize_hermes_base_url(item)
+        normalized.append(url)
+
+    unique_sorted = sorted(set(normalized))
+    return unique_sorted, "\n".join(unique_sorted)
+
+
+def validate_hermes_base_url(
+    base_url: str,
+    allowed_remote_base_urls: Any = "",
+    remote_warning_accepted: bool = False,
+    remote_warning_accepted_for: str = "",
+) -> str:
+    normalized_url, parsed = _normalize_hermes_base_url(base_url)
+    allowed_urls, canonical_allowed = parse_hermes_allowed_remote_base_urls(allowed_remote_base_urls)
+
+    if _is_hermes_loopback_base_url(parsed):
+        return normalized_url
+
+    if remote_warning_accepted is not True:
+        raise HermesBridgeError("Remote Hermes base URL requires risk confirmation")
+    if str(remote_warning_accepted_for or "") != canonical_allowed:
+        raise HermesBridgeError("Remote Hermes base URL risk confirmation is stale")
+    if normalized_url not in allowed_urls:
+        raise HermesBridgeError("Hermes base URL must be listed in allowed remote base URLs")
+
+    return normalized_url
 
 
 def get_hermes_config(require_enabled: bool = True) -> dict:
@@ -4058,7 +4120,12 @@ def get_hermes_config(require_enabled: bool = True) -> dict:
 
     plugin_config = config.get("plugins", {}).get(HERMES_PLUGIN_ID, {})
     settings = plugin_config.get("settings_values", {}) or {}
-    base_url = validate_hermes_base_url(settings.get("baseUrl") or HERMES_DEFAULT_BASE_URL)
+    base_url = validate_hermes_base_url(
+        settings.get("baseUrl") or HERMES_DEFAULT_BASE_URL,
+        settings.get("allowedRemoteBaseUrls", ""),
+        settings.get("remoteBaseUrlWarningAccepted", False),
+        settings.get("remoteBaseUrlWarningAcceptedFor", ""),
+    )
     model = settings.get("model") or HERMES_DEFAULT_MODEL
     if not isinstance(model, str) or not model.strip():
         model = HERMES_DEFAULT_MODEL

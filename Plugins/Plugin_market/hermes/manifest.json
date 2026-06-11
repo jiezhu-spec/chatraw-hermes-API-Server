@@ -1,13 +1,13 @@
 {
   "id": "hermes",
-  "version": "1.2.3",
+  "version": "1.2.4",
   "name": {
     "en": "Hermes Router",
     "zh": "Hermes 路由"
   },
   "description": {
-    "en": "Route selected ChatRaw messages to a local Hermes API server through the secure host bridge.",
-    "zh": "通过安全宿主桥接，将选定的 ChatRaw 消息路由到本机 Hermes API Server。"
+    "en": "Route selected ChatRaw messages to a local or confirmed remote Hermes API server through the secure host bridge.",
+    "zh": "通过安全宿主桥接，将选定的 ChatRaw 消息路由到本机或已确认放行的远程 Hermes API Server。"
   },
   "author": "ChatRaw",
   "homepage": "https://github.com/massif-01/ChatRaw",
@@ -69,8 +69,8 @@
         "zh": "Hermes API Server Key（如服务要求）"
       },
       "description": {
-        "en": "API_SERVER_KEY for the local Hermes API server. Official Hermes requires it; compatible no-auth servers may leave it empty.",
-        "zh": "本机 Hermes API Server 的 API_SERVER_KEY。官方 Hermes 需要填写；无鉴权兼容服务可留空。"
+        "en": "API_SERVER_KEY for the Hermes API server. Official Hermes requires it; compatible no-auth servers may leave it empty.",
+        "zh": "Hermes API Server 的 API_SERVER_KEY。官方 Hermes 需要填写；无鉴权兼容服务可留空。"
       }
     },
     {

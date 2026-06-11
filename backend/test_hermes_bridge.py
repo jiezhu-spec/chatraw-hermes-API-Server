@@ -143,7 +143,19 @@ class HermesBridgeTests(unittest.IsolatedAsyncioTestCase):
         self.original_cors_origins = main.CORS_ORIGINS
         self.addCleanup(lambda: setattr(main, "CORS_ORIGINS", self.original_cors_origins))
 
-    def enable_hermes(self, enabled=True, installed=True, api_key="secret", base_url="http://127.0.0.1:8642/v1", model="hermes-agent", session_key="", api_mode=None):
+    def enable_hermes(
+        self,
+        enabled=True,
+        installed=True,
+        api_key="secret",
+        base_url="http://127.0.0.1:8642/v1",
+        model="hermes-agent",
+        session_key="",
+        api_mode=None,
+        allowed_remote_base_urls="",
+        remote_warning_accepted=False,
+        remote_warning_accepted_for="",
+    ):
         if installed:
             plugin_dir = os.path.join(main.PLUGINS_INSTALLED_DIR, main.HERMES_PLUGIN_ID)
             os.makedirs(plugin_dir, exist_ok=True)
@@ -155,6 +167,12 @@ class HermesBridgeTests(unittest.IsolatedAsyncioTestCase):
         }
         if api_mode is not None:
             settings_values["apiMode"] = api_mode
+        if allowed_remote_base_urls:
+            settings_values["allowedRemoteBaseUrls"] = allowed_remote_base_urls
+        if remote_warning_accepted:
+            settings_values["remoteBaseUrlWarningAccepted"] = True
+        if remote_warning_accepted_for:
+            settings_values["remoteBaseUrlWarningAcceptedFor"] = remote_warning_accepted_for
         config = {
             "plugins": {
                 main.HERMES_PLUGIN_ID: {
@@ -394,6 +412,93 @@ class HermesBridgeTests(unittest.IsolatedAsyncioTestCase):
             with self.subTest(url=url):
                 with self.assertRaises(main.HermesBridgeError):
                     main.validate_hermes_base_url(url)
+
+        allowed = "http://10.10.99.99:9119, http://10.10.99.100:8642/v1/"
+        allowed_urls, canonical_allowed = main.parse_hermes_allowed_remote_base_urls(allowed)
+        self.assertEqual(allowed_urls, [
+            "http://10.10.99.100:8642/v1",
+            "http://10.10.99.99:9119",
+        ])
+        self.assertEqual(
+            canonical_allowed,
+            "http://10.10.99.100:8642/v1\nhttp://10.10.99.99:9119",
+        )
+        self.assertEqual(
+            main.validate_hermes_base_url(
+                "http://10.10.99.99:9119/",
+                allowed,
+                True,
+                canonical_allowed,
+            ),
+            "http://10.10.99.99:9119",
+        )
+        self.assertEqual(
+            main.validate_hermes_base_url(
+                "http://10.10.99.100:8642/v1",
+                allowed,
+                True,
+                canonical_allowed,
+            ),
+            "http://10.10.99.100:8642/v1",
+        )
+
+        remote_rejected = [
+            ("http://10.10.99.99:9119", allowed, False, canonical_allowed),
+            ("http://10.10.99.99:9119", allowed, True, "http://10.10.99.99:9119"),
+            ("http://10.10.99.98:9119", allowed, True, canonical_allowed),
+            ("http://10.10.99.99:9119", "http://10.10.99.99:9119\nftp://bad.test/v1", True, canonical_allowed),
+        ]
+        for base_url, allowed_value, accepted_warning, accepted_for in remote_rejected:
+            with self.subTest(base_url=base_url, allowed=allowed_value, accepted_for=accepted_for):
+                with self.assertRaises(main.HermesBridgeError):
+                    main.validate_hermes_base_url(base_url, allowed_value, accepted_warning, accepted_for)
+
+        with self.assertRaises(main.HermesBridgeError):
+            main.parse_hermes_allowed_remote_base_urls(
+                "\n".join(f"http://10.10.99.{index}:9119" for index in range(21))
+            )
+
+        with self.assertRaises(main.HermesBridgeError):
+            main.parse_hermes_allowed_remote_base_urls(f"http://10.10.99.99/{'a' * 300}")
+
+    async def test_hermes_health_allows_confirmed_remote_base_url(self):
+        allowed = "http://10.10.99.100:8642/v1\nhttp://10.10.99.99:9119"
+        _, canonical_allowed = main.parse_hermes_allowed_remote_base_urls(allowed)
+        self.enable_hermes(
+            base_url="http://10.10.99.99:9119/",
+            allowed_remote_base_urls=allowed,
+            remote_warning_accepted=True,
+            remote_warning_accepted_for=canonical_allowed,
+        )
+        fake_session = self.patch_session(FakeHermesSession())
+
+        result = await main.hermes_health(JsonRequest(url="http://testserver/api/hermes/health"))
+        status, data = self.decode_result(result)
+
+        self.assertEqual(status, 200)
+        self.assertTrue(data["success"])
+        self.assertEqual(fake_session.gets[0]["url"], "http://10.10.99.99:9119/models")
+        self.assertEqual(fake_session.gets[0]["headers"]["Authorization"], "Bearer secret")
+
+    async def test_hermes_chat_allows_confirmed_remote_base_url(self):
+        allowed = "http://10.10.99.100:8642/v1\nhttp://10.10.99.99:9119"
+        _, canonical_allowed = main.parse_hermes_allowed_remote_base_urls(allowed)
+        self.enable_hermes(
+            base_url="http://10.10.99.100:8642/v1/",
+            allowed_remote_base_urls=allowed,
+            remote_warning_accepted=True,
+            remote_warning_accepted_for=canonical_allowed,
+        )
+        self.configure_chat(stream=False)
+        fake_session = self.patch_session(FakeHermesSession())
+
+        result = await main.hermes_chat(JsonRequest({"message": "hi"}))
+        status, data = self.decode_result(result)
+
+        self.assertEqual(status, 200)
+        self.assertEqual(data["content"], "ok")
+        self.assertEqual(fake_session.posts[0]["url"], "http://10.10.99.100:8642/v1/chat/completions")
+        self.assertEqual(fake_session.posts[0]["headers"]["Authorization"], "Bearer secret")
 
     async def test_hermes_health_uses_models_without_chat_side_effects(self):
         self.enable_hermes()
