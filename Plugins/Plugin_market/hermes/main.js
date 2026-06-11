@@ -50,8 +50,8 @@
             sessionKeyNotSet: 'Session key not set',
             sessionKeyPlaceholder: 'Enter a new session key to replace the saved key',
             cancel: 'Cancel',
+            check: 'Check',
             save: 'Save',
-            saveAndCheck: 'Save & Check',
             clearKey: 'Clear key',
             clearSessionKey: 'Clear session key',
             saving: 'Saving...',
@@ -87,8 +87,8 @@
             sessionKeyNotSet: '尚未设置 session key',
             sessionKeyPlaceholder: '输入新 session key 以替换已保存 key',
             cancel: '取消',
+            check: '检查',
             save: '保存',
-            saveAndCheck: '保存并检查',
             clearKey: '清空 key',
             clearSessionKey: '清空 session key',
             saving: '保存中...',
@@ -142,7 +142,10 @@
     function setStatus(message, type) {
         const status = document.getElementById('hermes-status');
         if (!status) return;
-        status.textContent = message || '';
+        const row = document.getElementById('hermes-status-row');
+        const text = message || '';
+        status.textContent = text;
+        if (row) row.style.display = text ? 'block' : 'none';
         status.style.color = type === 'error' ? 'var(--danger-color, #dc2626)' : 'var(--text-secondary)';
     }
 
@@ -260,11 +263,8 @@
         }
     }
 
-    async function handleSaveAndCheck() {
+    async function handleCheck() {
         try {
-            setStatus(t('saving'));
-            await saveSettings();
-            injectSettingsUI();
             setStatus(t('checking'));
 
             const res = await fetch('/api/hermes/health');
@@ -382,13 +382,13 @@
                         <button id="hermes-clear-session-key" class="btn-secondary" type="button" style="padding:8px 14px; border:1px solid var(--border-color); border-radius:var(--radius-sm); background:transparent; cursor:pointer;">${escapeHtml(t('clearSessionKey'))}</button>
                     </div>
                 </div>
-                <div style="padding:14px 24px; min-height:42px;">
+                <div id="hermes-status-row" style="display:none; padding:12px 24px;">
                     <div id="hermes-status" style="font-size:0.86rem; color:var(--text-secondary);"></div>
                 </div>
                 <div style="display:flex; justify-content:flex-end; gap:10px; padding:16px 24px; border-top:1px solid var(--border-color);">
                     <button id="hermes-cancel" class="btn-secondary" type="button" style="padding:10px 18px; border:1px solid var(--border-color); border-radius:var(--radius-sm); background:transparent; cursor:pointer;">${escapeHtml(t('cancel'))}</button>
-                    <button id="hermes-save" class="btn-secondary" type="button" style="padding:10px 18px; border:1px solid var(--border-color); border-radius:var(--radius-sm); background:transparent; cursor:pointer;">${escapeHtml(t('save'))}</button>
-                    <button id="hermes-save-check" class="btn-primary" type="button" style="padding:10px 18px; border:none; border-radius:var(--radius-sm); background:var(--text-primary); color:var(--bg-primary); cursor:pointer; font-weight:500;">${escapeHtml(t('saveAndCheck'))}</button>
+                    <button id="hermes-check" class="btn-secondary" type="button" style="padding:10px 18px; border:1px solid var(--border-color); border-radius:var(--radius-sm); background:transparent; cursor:pointer;">${escapeHtml(t('check'))}</button>
+                    <button id="hermes-save" class="btn-primary" type="button" style="padding:10px 18px; border:none; border-radius:var(--radius-sm); background:var(--text-primary); color:var(--bg-primary); cursor:pointer; font-weight:500;">${escapeHtml(t('save'))}</button>
                 </div>
             </div>
         `;
@@ -413,8 +413,8 @@
         updateApiKeyStatus();
 
         document.getElementById('hermes-cancel')?.addEventListener('click', closeSettings);
+        document.getElementById('hermes-check')?.addEventListener('click', handleCheck);
         document.getElementById('hermes-save')?.addEventListener('click', () => handleSave(true));
-        document.getElementById('hermes-save-check')?.addEventListener('click', handleSaveAndCheck);
         document.getElementById('hermes-clear-key')?.addEventListener('click', handleClearKey);
         document.getElementById('hermes-clear-session-key')?.addEventListener('click', handleClearSessionKey);
     }

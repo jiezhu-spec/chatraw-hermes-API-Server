@@ -3163,6 +3163,8 @@ input[type=range]::-webkit-slider-thumb:hover {
     padding: 0;
     overflow: hidden;  /* Let child handle scrolling */
     min-height: 0;  /* Critical for flex shrinking */
+    display: flex;
+    flex-direction: column;
 }
 
 /* Plugin Custom Settings Container */
