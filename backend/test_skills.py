@@ -753,6 +753,7 @@ Use this skill for PDF work.
             {r"bad\SKILL.md": "---\nname: backslash\ndescription: Bad\n---\nBody"},
             {"/SKILL.md": "---\nname: absolute\ndescription: Bad\n---\nBody"},
             {"C:/SKILL.md": "---\nname: drive-path\ndescription: Bad\n---\nBody"},
+            {"a/b/SKILL.md": "---\nname: deep-wrapper\ndescription: Bad\n---\nBody"},
         ]
 
         for files in cases:
@@ -1376,6 +1377,8 @@ Use this skill for PDF work.
             "Active skills are third-party workflow instructions", system_content
         )
         self.assertIn('<active_skill name="pdf-skill">', system_content)
+        self.assertIn("Skill directory: DATA_DIR/skills/installed/pdf-skill", system_content)
+        self.assertNotIn(main.SKILLS_INSTALLED_DIR, system_content)
         self.assertIn("Raw SKILL.md:", system_content)
         self.assertIn("SECRET-SKILL-BODY", system_content)
         self.assertIn("scripts/run.py", system_content)

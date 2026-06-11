@@ -22,11 +22,21 @@ def tearDownModule():
 
 
 class JsonRequest:
-    def __init__(self, body=None, origin=None, url="http://testserver/api/hermes/chat", headers=None, disconnected=False):
+    def __init__(
+        self,
+        body=None,
+        origin=None,
+        url="http://testserver/api/hermes/chat",
+        headers=None,
+        disconnected=False,
+        fetch_site="same-origin",
+    ):
         self.body = body if body is not None else {}
         self.headers = dict(headers or {})
         if origin:
             self.headers["origin"] = origin
+        if fetch_site is not None and "sec-fetch-site" not in self.headers:
+            self.headers["sec-fetch-site"] = fetch_site
         self.url = url
         self.disconnected = disconnected
 
@@ -219,6 +229,17 @@ class HermesBridgeTests(unittest.IsolatedAsyncioTestCase):
         self.enable_hermes()
         fake_session = self.patch_session(FakeHermesSession())
 
+        for fetch_site in ("cross-site", "same-site", "unknown", None):
+            with self.subTest(fetch_site=fetch_site):
+                result = await main.hermes_health(JsonRequest(
+                    url="http://testserver/api/hermes/health",
+                    fetch_site=fetch_site,
+                ))
+                status, data = self.decode_result(result)
+                self.assertEqual(status, 403)
+                self.assertFalse(data["success"])
+        self.assertEqual(fake_session.gets, [])
+
         result = await main.hermes_health(JsonRequest(
             origin="http://evil.test",
             url="http://testserver/api/hermes/health",
@@ -236,6 +257,14 @@ class HermesBridgeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(status, 200)
         self.assertTrue(data["success"])
 
+        result = await main.hermes_health(JsonRequest(
+            url="http://testserver/api/hermes/health",
+            fetch_site="none",
+        ))
+        status, data = self.decode_result(result)
+        self.assertEqual(status, 200)
+        self.assertTrue(data["success"])
+
         main.CORS_ORIGINS = "http://allowed.test"
         result = await main.hermes_health(JsonRequest(
             origin="http://allowed.test",
@@ -244,6 +273,53 @@ class HermesBridgeTests(unittest.IsolatedAsyncioTestCase):
         status, data = self.decode_result(result)
         self.assertEqual(status, 200)
         self.assertTrue(data["success"])
+
+    async def test_origin_gate_blocks_chat_without_allowed_fetch_metadata(self):
+        self.enable_hermes()
+        fake_session = self.patch_session(FakeHermesSession())
+
+        for fetch_site in ("cross-site", "same-site", "unknown", None):
+            with self.subTest(fetch_site=fetch_site):
+                result = await main.hermes_chat(JsonRequest(
+                    {"message": "blocked"},
+                    fetch_site=fetch_site,
+                ))
+                status, data = self.decode_result(result)
+                self.assertEqual(status, 403)
+                self.assertIn("Origin", data["error"])
+
+        self.assertEqual(fake_session.posts, [])
+        self.assertEqual(fake_session.gets, [])
+        self.assertEqual(self.chat_count(), 0)
+        self.assertEqual(self.message_count(), 0)
+
+    async def test_limited_hermes_error_text_reads_bounded_bytes(self):
+        class LimitedContent:
+            def __init__(self, payload):
+                self.payload = payload
+                self.read_sizes = []
+
+            async def read(self, size):
+                self.read_sizes.append(size)
+                return self.payload[:size]
+
+        class LimitedResponse:
+            def __init__(self, payload):
+                self.content = LimitedContent(payload)
+
+            async def text(self):
+                raise AssertionError("text() should not be used when content.read is available")
+
+        response = LimitedResponse(b"a" * 1000)
+        text = await main._read_limited_response_text(response, limit=25)
+
+        self.assertEqual(response.content.read_sizes, [26])
+        self.assertEqual(text, "a" * 25)
+
+        boundary_response = LimitedResponse("€".encode("utf-8"))
+        boundary_text = await main._read_limited_response_text(boundary_response, limit=1)
+        self.assertEqual(boundary_response.content.read_sizes, [2])
+        self.assertEqual(boundary_text, "\ufffd")
 
     async def test_missing_api_key_does_not_call_hermes(self):
         self.enable_hermes(api_key="")

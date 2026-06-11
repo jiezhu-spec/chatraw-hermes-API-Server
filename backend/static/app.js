@@ -1140,8 +1140,7 @@ function app() {
                 }
             }
             if (pluginId === SKILL_MANAGER_PLUGIN_ID) {
-                this.skillCatalogCache = null;
-                this.skillCatalogLoadedAt = 0;
+                this.invalidateSkillCatalog();
                 removedActiveMenuProvider = true;
             }
             if (removedActiveMenuProvider) {
@@ -1168,6 +1167,15 @@ function app() {
             return this.installedPlugins.some(plugin => plugin.id === SKILL_MANAGER_PLUGIN_ID && plugin.enabled === true);
         },
 
+        invalidateSkillCatalog() {
+            this.skillCatalogCache = null;
+            this.skillCatalogLoadedAt = 0;
+            if (this.completionItems.some(item => item.providerId === '__host:skill-manager-skills')) {
+                this.closeCompletionMenu();
+            }
+            return true;
+        },
+
         getSkillCompletionProvider(trigger) {
             if (trigger !== '/' || !this.isSkillManagerEnabled()) return null;
             return {
@@ -1181,6 +1189,9 @@ function app() {
         },
 
         async loadSkillCatalogForCompletion() {
+            if (!this.isSkillManagerEnabled()) {
+                return [];
+            }
             const now = Date.now();
             if (this.skillCatalogCache && now - this.skillCatalogLoadedAt < SKILL_CATALOG_CACHE_MS) {
                 return this.skillCatalogCache;
@@ -1320,10 +1331,14 @@ function app() {
             return html;
         },
 
-        extractActiveSkillNamesFromText(message) {
+        async extractActiveSkillNamesFromText(message) {
+            if (!this.isSkillManagerEnabled()) {
+                return [];
+            }
+            await this.loadSkillCatalogForCompletion();
             const seen = new Set();
             const names = [];
-            for (const range of this.getComposerSkillTokenRanges(message)) {
+            for (const range of this.getComposerSkillTokenRanges(message, { knownOnly: true })) {
                 if (seen.has(range.name)) continue;
                 seen.add(range.name);
                 names.push(range.name);
@@ -1331,11 +1346,17 @@ function app() {
             return names;
         },
 
-        prepareOutgoingMessage() {
+        async prepareOutgoingMessage() {
             const message = (this.inputMessage || '').trim();
+            if (!message) {
+                return {
+                    message,
+                    activeSkillNames: []
+                };
+            }
             return {
                 message,
-                activeSkillNames: this.extractActiveSkillNamesFromText(message)
+                activeSkillNames: await this.extractActiveSkillNamesFromText(message)
             };
         },
 
@@ -1385,8 +1406,7 @@ function app() {
             }
 
             if (result.refreshSkillCatalog) {
-                this.skillCatalogCache = null;
-                this.skillCatalogLoadedAt = 0;
+                this.invalidateSkillCatalog();
             }
 
             this.$nextTick(() => this.scrollToBottom());
@@ -1473,10 +1493,11 @@ function app() {
         
         // Send message
         async sendMessage() {
-            const outgoing = this.prepareOutgoingMessage();
+            if (this.isGenerating) return;
+            const outgoing = await this.prepareOutgoingMessage();
             let message = outgoing.message;
             const activeSkillNames = [...outgoing.activeSkillNames];
-            if (!message || this.isGenerating) return;
+            if (!message) return;
             
             this.isGenerating = true;
             this.abortController = new AbortController();
@@ -2476,7 +2497,8 @@ function app() {
                     ),
                     unregisterCompletionProvider: (id, pluginId = null) => (
                         appInstance.unregisterCompletionProvider(id, pluginId)
-                    )
+                    ),
+                    invalidateSkillCatalog: () => appInstance.invalidateSkillCatalog()
                 },
                 
                 // Utility functions for plugin developers
@@ -2762,6 +2784,15 @@ function app() {
         // Load a plugin's JS file
         async loadPluginJS(plugin) {
             try {
+                this.unregisterPluginHooks(plugin.id);
+                this.unregisterPluginCompletions(plugin.id);
+                this.pluginToolbarButtons = this.pluginToolbarButtons.filter(
+                    button => button.pluginId !== plugin.id
+                );
+                if (this.pluginFullscreenModal?.pluginId === plugin.id) {
+                    this.closePluginFullscreenModal();
+                }
+
                 // First load dependencies
                 if (plugin.dependencies) {
                     for (const [name, url] of Object.entries(plugin.dependencies)) {
@@ -2799,8 +2830,10 @@ function app() {
                 this._currentLoadingPlugin = plugin.id;
                 
                 // Then load the plugin main.js
-                const scriptUrl = `/api/plugins/${encodeURIComponent(plugin.id)}/main.js`;
-                await this.loadScript(scriptUrl, { reload: true });
+                const scriptBaseUrl = `/api/plugins/${encodeURIComponent(plugin.id)}/main.js`;
+                const pluginVersion = encodeURIComponent(String(plugin.version || '0'));
+                const scriptUrl = `${scriptBaseUrl}?v=${pluginVersion}`;
+                await this.loadScript(scriptUrl, { reload: true, reloadPrefix: scriptBaseUrl });
                 
                 this._currentLoadingPlugin = null;
                 console.log(`[Plugin] Loaded: ${plugin.id}`);
@@ -2821,6 +2854,14 @@ function app() {
                         return;
                     }
                     existing.remove();
+                }
+                if (options.reload && options.reloadPrefix) {
+                    for (const script of Array.from(document.querySelectorAll('script'))) {
+                        const src = script.getAttribute('src') || '';
+                        if (src.startsWith(options.reloadPrefix)) {
+                            script.remove();
+                        }
+                    }
                 }
                 
                 const script = document.createElement('script');

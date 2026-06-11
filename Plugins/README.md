@@ -597,6 +597,7 @@ Available methods:
 - `replaceRange(start, end, text)` replaces a character range and restores focus.
 - `getSelection()` returns `{ start, end }`.
 - `focus()` focuses the composer.
+- `invalidateSkillCatalog()` clears the host slash-completion skill catalog cache after a skill install, upload, toggle, trust, or delete operation.
 
 ### Completion Provider API
 
@@ -1884,6 +1885,7 @@ ChatRawPlugin.input.focus();
 - `replaceRange(start, end, text)` 替换字符范围并恢复焦点。
 - `getSelection()` 返回 `{ start, end }`。
 - `focus()` 聚焦输入框。
+- `invalidateSkillCatalog()` 在安装、上传、启用/禁用、信任或删除 skill 后清理宿主 slash 补全 skill catalog 缓存。
 
 ### 补全 Provider API
 

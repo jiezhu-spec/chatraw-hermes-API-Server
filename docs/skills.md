@@ -38,6 +38,8 @@ Skill Manager supports:
 - Local `SKILL.md` uploads.
 - Local `.zip` packages whose root, or one wrapper directory, contains `SKILL.md`.
 
+Zip packages with deeper wrappers such as `a/b/SKILL.md` are rejected; put `SKILL.md` at the zip root or inside one top-level directory.
+
 For repository roots, ChatRaw resolves a root `SKILL.md` first, then a single `skills/<name>/SKILL.md`.
 Repositories with multiple skills must use a tree URL to a specific skill directory. GitHub installs also
 record `license` from `SKILL.md` frontmatter or the repository license API when available.
@@ -123,6 +125,8 @@ Skill 管理器支持：
 - 指向具体 skill 目录的公开 GitHub tree URL。
 - 本地 `SKILL.md` 上传。
 - 根目录或一层外包目录包含 `SKILL.md` 的本地 `.zip` 包。
+
+包含 `a/b/SKILL.md` 这类更深层外包目录的 zip 会被拒绝；请把 `SKILL.md` 放在 zip 根目录或一个顶层目录内。
 
 对于仓库根目录，ChatRaw 会先解析根目录 `SKILL.md`，再解析单个 `skills/<name>/SKILL.md`。
 包含多个 skills 的仓库必须使用指向具体 skill 目录的 tree URL。GitHub 安装还会在可用时记录

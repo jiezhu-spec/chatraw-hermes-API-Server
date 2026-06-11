@@ -2180,7 +2180,7 @@ def build_active_skill_context(skill_names: List[str]) -> Tuple[str, List[dict]]
             raise HTTPException(status_code=400, detail=f"Skill name does not match directory name: {skill_name}")
 
         source = entry.get("source") if isinstance(entry.get("source"), dict) else {}
-        skill_dir = resolve_skill_dir(skill_name)
+        skill_dir = f"DATA_DIR/skills/installed/{skill_name}"
         resource_summary = _format_skill_resources_for_prompt(skill_name)
         diagnostics = []
         config_diagnostics = entry.get("diagnostics") if isinstance(entry.get("diagnostics"), list) else []
@@ -2427,6 +2427,8 @@ def stage_zip_skill(content: bytes, stage_dir: Path):
             raise SkillInstallError("Multiple SKILL.md files are not supported")
 
         package_root = skill_paths[0].parent
+        if package_root != PurePosixPath(".") and len(package_root.parts) > 1:
+            raise SkillInstallError("Zip package must contain SKILL.md at root or inside one wrapper directory")
         for info, rel_path in normalized_files:
             stripped = _strip_package_root(rel_path, package_root)
             if stripped is None:
@@ -3998,7 +4000,10 @@ def _origin_key(origin: str) -> Optional[Tuple[str, str, int]]:
 def validate_hermes_request_origin(request: Request):
     origin = request.headers.get("origin")
     if not origin:
-        return
+        fetch_site = (request.headers.get("sec-fetch-site") or "").lower()
+        if fetch_site in ("same-origin", "none"):
+            return
+        raise HTTPException(status_code=403, detail="Missing Origin for Hermes bridge")
 
     origin_key = _origin_key(origin)
     if not origin_key:
@@ -4099,6 +4104,15 @@ def _hermes_chat_headers(config: dict, chat_id: str) -> dict:
 
 
 async def _read_limited_response_text(resp, limit: int = 500) -> str:
+    limit = max(0, int(limit))
+    content = getattr(resp, "content", None)
+    reader = getattr(content, "read", None)
+    if callable(reader):
+        raw = await reader(limit + 1)
+        if isinstance(raw, str):
+            return raw[:limit]
+        return bytes(raw).decode("utf-8", errors="replace")[:limit]
+
     text = await resp.text()
     return text[:limit]
 

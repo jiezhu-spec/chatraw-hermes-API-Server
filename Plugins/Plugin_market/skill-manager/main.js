@@ -4,7 +4,7 @@
  * Manages installed skills through the Phase 1-4 backend APIs. This plugin
  * never injects skills into chat itself and never executes skill scripts.
  *
- * @version 1.0.0
+ * @version 1.0.1
  * @author ChatRaw
  * @license MIT
  */
@@ -978,6 +978,14 @@
       : [];
   }
 
+  function notifyHostSkillCatalogChanged() {
+    try {
+      ChatRaw.input?.invalidateSkillCatalog?.();
+    } catch (error) {
+      console.warn('[SkillManager] Failed to invalidate host skill catalog:', error);
+    }
+  }
+
   async function loadSkills(sessionId, preferredName) {
     const requestId = ++requestSeq;
     setStatus(t('loading'));
@@ -1224,6 +1232,7 @@
       if (!isActive(sessionId)) return;
       const name = data.skill?.name || state.selectedName;
       if (input) input.value = '';
+      notifyHostSkillCatalogChanged();
       showToast(t('installSuccess'), 'success');
       await loadSkills(sessionId, name);
       if (!isActive(sessionId)) return;
@@ -1267,6 +1276,7 @@
       if (!isActive(sessionId)) return;
       const name = data.skill?.name || state.selectedName;
       clearUploadInput();
+      notifyHostSkillCatalogChanged();
       showToast(t('installSuccess'), 'success');
       await loadSkills(sessionId, name);
       if (!isActive(sessionId)) return;
@@ -1333,6 +1343,7 @@
       state.selectedDetail = nextDetail;
       const index = state.skills.findIndex((item) => item.name === state.selectedDetail.name);
       if (index >= 0) state.skills[index] = state.selectedDetail;
+      notifyHostSkillCatalogChanged();
       renderSkillList();
       renderDetail();
       setStatus(t('updateSuccess'), 'success');
@@ -1361,6 +1372,7 @@
       showToast(data.warning || t('deleteSuccess'), data.warning ? 'info' : 'success');
       state.selectedName = '';
       state.selectedDetail = null;
+      notifyHostSkillCatalogChanged();
       await loadSkills(sessionId);
       if (!isActive(sessionId)) return;
       setStatus(data.warning || t('deleteSuccess'), data.warning ? 'success' : 'success');
