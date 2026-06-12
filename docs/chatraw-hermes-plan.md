@@ -35,7 +35,7 @@
    不破坏 ChatRaw 现有 OpenAI-compatible 模型配置；Hermes 能力作为增强路径。
 
 4. **不把音频依赖放进默认安装。**
-   `faster-whisper` 只作为可选插件/额外依赖，不进入默认 `backend/requirements.txt`。
+   `faster-whisper` 和音频智能分析链路当前不接入默认版本，避免触发大依赖下载和后台进程干扰。
 
 5. **每个阶段有 PR 和验证。**
    每个功能 issue 对应单独分支和 PR；Actions 必须能证明代码可构建、可导入、Docker 可打包。
@@ -160,4 +160,4 @@
 - 上游已有 Hermes 相关提交，不能回退覆盖。
 - Hermes Client 删除会话后 `slash_worker` 仍可能残留，ChatRaw-Hermes 需要显式生命周期管理。
 - GitHub Actions 不能继续写死 DockerHub `massif01/chatraw`。
-- `faster-whisper` 会触发大依赖和模型下载，不能放入默认安装路径。
+- `faster-whisper` 会触发大依赖和模型下载，当前默认版本不接入该插件链路。

@@ -4317,6 +4317,64 @@ def _extract_error_message(value) -> str:
     return ""
 
 
+def _extract_first_text(data: dict, keys: Tuple[str, ...]) -> str:
+    if not isinstance(data, dict):
+        return ""
+    for key in keys:
+        text = _extract_text_value(data.get(key))
+        if text:
+            return text
+    return ""
+
+
+def _normalize_tool_phase(event_type: str, status: str) -> str:
+    type_status = " ".join(part for part in (event_type, status) if part)
+    if any(token in type_status for token in ("complete", "completed", "succeeded", "success", "done", "end")):
+        return "complete"
+    if any(token in type_status for token in ("failed", "error", "cancelled", "canceled")):
+        return "error"
+    if any(token in type_status for token in ("progress", "delta", "update", "running")):
+        return "progress"
+    return "start"
+
+
+def _normalize_hermes_tool_event(data: dict, event_type: str, status: str) -> dict:
+    tool = data.get("tool") if isinstance(data.get("tool"), dict) else {}
+    function = data.get("function") if isinstance(data.get("function"), dict) else {}
+    payload = data.get("payload") if isinstance(data.get("payload"), dict) else {}
+
+    name = (
+        _extract_first_text(data, ("name", "tool_name", "tool", "function_name"))
+        or _extract_first_text(tool, ("name", "tool_name"))
+        or _extract_first_text(function, ("name",))
+        or _extract_first_text(payload, ("name", "tool_name"))
+        or "tool"
+    )
+    tool_id = (
+        _extract_first_text(data, ("tool_id", "id", "call_id"))
+        or _extract_first_text(tool, ("id", "tool_id", "call_id"))
+        or _extract_first_text(payload, ("tool_id", "id", "call_id"))
+    )
+    label = (
+        _extract_first_text(data, ("context", "label", "message", "summary"))
+        or _extract_first_text(payload, ("context", "label", "message", "summary"))
+    )
+    args = data.get("args", data.get("arguments", data.get("input", tool.get("args", tool.get("arguments")))))
+    result = data.get("result", data.get("output", data.get("content", tool.get("result", tool.get("output")))))
+
+    return {
+        "phase": _normalize_tool_phase(event_type, status),
+        "type": event_type,
+        "status": status,
+        "id": str(tool_id) if tool_id else "",
+        "name": str(name),
+        "label": label,
+        "args": args,
+        "result": result,
+        "raw": data,
+    }
+
+
 def normalize_hermes_run_event(event: dict) -> dict:
     if not isinstance(event, dict):
         return {}
@@ -4342,7 +4400,8 @@ def normalize_hermes_run_event(event: dict) -> dict:
         return result
 
     if "tool" in event_type:
-        return {}
+        result["tool_event"] = _normalize_hermes_tool_event(data, event_type, status)
+        return result
 
     raw_delta = data.get("delta")
     delta = raw_delta if isinstance(raw_delta, dict) else {}
@@ -4459,6 +4518,7 @@ async def _consume_hermes_run(submission: dict, config: dict, request: Request, 
     references = []
     full_response = ""
     full_thinking = ""
+    tool_events = []
     terminal_seen = False
 
     try:
@@ -4480,6 +4540,12 @@ async def _consume_hermes_run(submission: dict, config: dict, request: Request, 
                 full_thinking += thinking
                 if stream:
                     yield json.dumps({"thinking": thinking})
+
+            tool_event = event.get("tool_event")
+            if tool_event:
+                tool_events.append(tool_event)
+                if stream:
+                    yield json.dumps({"tool": tool_event})
 
             content = event.get("content_delta") or ""
             if content:
@@ -4514,7 +4580,12 @@ async def _consume_hermes_run(submission: dict, config: dict, request: Request, 
         if stream:
             yield json.dumps({"done": True})
         else:
-            yield json.dumps({"content": full_response, "thinking": full_thinking, "references": references})
+            yield json.dumps({
+                "content": full_response,
+                "thinking": full_thinking,
+                "references": references,
+                "tools": tool_events,
+            })
     except asyncio.CancelledError:
         if run_id:
             await _stop_hermes_run(session, submission, config, run_id)
@@ -4839,12 +4910,15 @@ async def hermes_chat(request: Request):
             result = await _call_hermes_run_non_stream(submission, config, request)
         else:
             result = await _call_hermes_non_stream(submission, config)
-        return {
+        response = {
             "chat_id": submission["chat_id"],
             "content": result["content"],
             "thinking": result.get("thinking", ""),
             "references": result["references"],
         }
+        if result.get("tools"):
+            response["tools"] = result["tools"]
+        return response
     except HermesBridgeError as e:
         return _hermes_error_response(e)
 

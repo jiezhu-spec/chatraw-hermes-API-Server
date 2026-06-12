@@ -814,7 +814,7 @@ class HermesBridgeTests(unittest.IsolatedAsyncioTestCase):
         messages = main.db.get_messages(chat_id)
         self.assertEqual(messages[1].content, "<thinking>\n想\n</thinking>\n\n你")
 
-    def test_hermes_run_event_parser_maps_supported_fields_and_ignores_tools(self):
+    def test_hermes_run_event_parser_maps_supported_fields_and_tools(self):
         self.assertEqual(
             main.normalize_hermes_run_event({"type": "message.delta", "delta": {"content": "Hi"}})["content_delta"],
             "Hi",
@@ -838,17 +838,28 @@ class HermesBridgeTests(unittest.IsolatedAsyncioTestCase):
             main.normalize_hermes_run_event({"delta": {"reasoning_content": "Think"}})["thinking_delta"],
             "Think",
         )
-        self.assertEqual(
-            main.normalize_hermes_run_event({"type": "tool.progress", "message": "running"}),
-            {},
-        )
-        self.assertEqual(
-            main.normalize_hermes_run_event({
-                "event": "message",
-                "data": {"type": "tool.progress", "message": "running"},
-            }),
-            {},
-        )
+        tool_progress = main.normalize_hermes_run_event({
+            "type": "tool.progress",
+            "name": "terminal",
+            "tool_id": "call-1",
+            "message": "date",
+        })
+        self.assertEqual(tool_progress["tool_event"]["phase"], "progress")
+        self.assertEqual(tool_progress["tool_event"]["name"], "terminal")
+        self.assertEqual(tool_progress["tool_event"]["id"], "call-1")
+        self.assertEqual(tool_progress["tool_event"]["label"], "date")
+        tool_complete = main.normalize_hermes_run_event({
+            "event": "message",
+            "data": {
+                "type": "tool.complete",
+                "tool": {"name": "skill_view", "id": "call-2"},
+                "result": {"success": True},
+            },
+        })
+        self.assertEqual(tool_complete["tool_event"]["phase"], "complete")
+        self.assertEqual(tool_complete["tool_event"]["name"], "skill_view")
+        self.assertEqual(tool_complete["tool_event"]["id"], "call-2")
+        self.assertEqual(tool_complete["tool_event"]["result"], {"success": True})
         failed = main.normalize_hermes_run_event({"status": "failed", "error": {"message": "boom"}})
         self.assertTrue(failed["terminal"])
         self.assertEqual(failed["error"], "boom")
@@ -862,7 +873,7 @@ class HermesBridgeTests(unittest.IsolatedAsyncioTestCase):
         event_chunks = [
             b'event: message.delta\ndata: {"delta":"Hello "}\n\n',
             b'event: message.delta\ndata: {"delta":{"reasoning_content":"Plan"}}\n\n',
-            b'event: tool.progress\ndata: {"message":"ignored"}\n\n',
+            b'event: tool.progress\ndata: {"name":"terminal","tool_id":"call-1","message":"date"}\n\n',
             b'data: {"output_text":"world"}\n\n',
             b'event: run.completed\ndata: {}\n\n',
         ]
@@ -882,6 +893,11 @@ class HermesBridgeTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(any('"content": "Hello "' in chunk for chunk in stream_chunks))
         self.assertTrue(any('"content": "world"' in chunk for chunk in stream_chunks))
         self.assertTrue(any('"thinking": "Plan"' in chunk for chunk in stream_chunks))
+        tool_chunks = [json.loads(chunk)["tool"] for chunk in stream_chunks if '"tool"' in chunk]
+        self.assertEqual(tool_chunks[0]["phase"], "progress")
+        self.assertEqual(tool_chunks[0]["name"], "terminal")
+        self.assertEqual(tool_chunks[0]["id"], "call-1")
+        self.assertEqual(tool_chunks[0]["label"], "date")
         self.assertTrue(any('"done": true' in chunk for chunk in stream_chunks))
 
         chat_id = json.loads(stream_chunks[0])["chat_id"]
@@ -898,6 +914,7 @@ class HermesBridgeTests(unittest.IsolatedAsyncioTestCase):
         event_chunks = [
             b'data: {"delta":{"content":"Final "}}\n\n',
             b'data: {"delta":{"thinking":"Reason"}}\n\n',
+            b'event: tool.complete\ndata: {"tool":{"name":"skill_view","id":"call-2"},"result":{"success":true}}\n\n',
             b'data: {"output_text":"answer"}\n\n',
             b'event: run.succeeded\ndata: {}\n\n',
         ]
@@ -913,6 +930,10 @@ class HermesBridgeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(data["content"], "Final answer")
         self.assertEqual(data["thinking"], "Reason")
         self.assertEqual(data["references"], [])
+        self.assertEqual(data["tools"][0]["phase"], "complete")
+        self.assertEqual(data["tools"][0]["name"], "skill_view")
+        self.assertEqual(data["tools"][0]["id"], "call-2")
+        self.assertEqual(data["tools"][0]["result"], {"success": True})
         self.assertEqual(fake_session.posts[0]["url"], "http://127.0.0.1:8642/v1/runs")
         self.assertEqual(fake_session.gets[0]["url"], "http://127.0.0.1:8642/v1/runs/run-2/events")
         messages = main.db.get_messages(data["chat_id"])
