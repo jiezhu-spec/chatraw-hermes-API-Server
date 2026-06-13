@@ -135,6 +135,30 @@ def bytes_to_embedding(data: bytes) -> List[float]:
 
 _http_session: Optional[aiohttp.ClientSession] = None
 
+def _env_float(name: str, default: float) -> float:
+    raw = os.environ.get(name)
+    if raw is None or raw == "":
+        return default
+    try:
+        value = float(raw)
+    except ValueError:
+        logger.warning(f"Ignoring invalid {name}={raw!r}; using {default}")
+        return default
+    if value <= 0:
+        logger.warning(f"Ignoring non-positive {name}={raw!r}; using {default}")
+        return default
+    return value
+
+HERMES_DEFAULT_TIMEOUT_SECONDS = _env_float("HERMES_HTTP_TIMEOUT", 300)
+HERMES_CHAT_TIMEOUT_SECONDS = _env_float("HERMES_CHAT_TIMEOUT", HERMES_DEFAULT_TIMEOUT_SECONDS)
+HERMES_RUN_CREATE_TIMEOUT_SECONDS = _env_float("HERMES_RUN_CREATE_TIMEOUT", 60)
+HERMES_RUN_STOP_TIMEOUT_SECONDS = _env_float("HERMES_RUN_STOP_TIMEOUT", 30)
+HERMES_RUN_EVENT_TIMEOUT_SECONDS = _env_float(
+    "HERMES_RUN_EVENT_TIMEOUT",
+    _env_float("HERMES_BRIDGE_TIMEOUT", 1800),
+)
+HERMES_RUN_CONNECT_TIMEOUT_SECONDS = _env_float("HERMES_RUN_CONNECT_TIMEOUT", 10)
+
 def _create_ssl_context() -> ssl.SSLContext:
     return ssl.create_default_context(cafile=certifi.where())
 
@@ -142,7 +166,7 @@ async def get_http_session() -> aiohttp.ClientSession:
     """Get or create shared HTTP session"""
     global _http_session
     if _http_session is None or _http_session.closed:
-        timeout = aiohttp.ClientTimeout(total=300, connect=10)
+        timeout = aiohttp.ClientTimeout(total=HERMES_DEFAULT_TIMEOUT_SECONDS, connect=10)
         connector = aiohttp.TCPConnector(ssl=_create_ssl_context())
         _http_session = aiohttp.ClientSession(timeout=timeout, connector=connector)
     return _http_session
@@ -2308,6 +2332,43 @@ def serialize_message_for_api(message: Message) -> dict:
     return data
 
 
+def _compact_overlap_text(value: str) -> str:
+    return re.sub(r"\s+", " ", value or "").strip()
+
+
+def sanitize_visible_duplicate_thinking(content: str, thinking: str) -> str:
+    """Drop provider reasoning that is just a duplicate of the visible answer."""
+    raw_thinking = thinking or ""
+    if not raw_thinking.strip():
+        return ""
+
+    content_norm = _compact_overlap_text(content or "")
+    thinking_norm = _compact_overlap_text(raw_thinking)
+    if not content_norm or not thinking_norm:
+        return raw_thinking
+
+    if thinking_norm == content_norm or thinking_norm in content_norm:
+        return ""
+
+    thinking_lines = [
+        _compact_overlap_text(line)
+        for line in raw_thinking.splitlines()
+        if len(_compact_overlap_text(line)) >= 8
+    ]
+    if thinking_lines:
+        visible_lines = sum(1 for line in thinking_lines if line in content_norm)
+        if visible_lines / len(thinking_lines) >= 0.6:
+            return ""
+
+    if len(thinking_norm) >= 80:
+        prefix = thinking_norm[:160]
+        suffix = thinking_norm[-160:]
+        if prefix in content_norm and suffix in content_norm:
+            return ""
+
+    return raw_thinking
+
+
 def save_assistant_message(
     db_instance: Database,
     chat_id: str,
@@ -2316,11 +2377,12 @@ def save_assistant_message(
     thinking: str = "",
     tool_calls: Optional[List[dict]] = None,
 ) -> Message:
+    clean_thinking = sanitize_visible_duplicate_thinking(content or "", thinking or "")
     message = db_instance.add_message(
         chat_id,
         "assistant",
         content or "",
-        thinking=thinking or "",
+        thinking=clean_thinking,
         tool_calls=tool_calls or [],
     )
 
@@ -4102,6 +4164,11 @@ def validate_hermes_request_origin(request: Request):
         fetch_site = (request.headers.get("sec-fetch-site") or "").lower()
         if fetch_site in ("same-origin", "none"):
             return
+        referer = request.headers.get("referer")
+        referer_key = _origin_key(referer) if referer else None
+        request_key = _origin_key(str(request.url))
+        if referer_key and request_key and referer_key == request_key:
+            return
         raise HTTPException(status_code=403, detail="Missing Origin for Hermes bridge")
 
     origin_key = _origin_key(origin)
@@ -4469,6 +4536,31 @@ def _normalize_hermes_tool_event(data: dict, event_type: str, status: str) -> di
     }
 
 
+def _merge_hermes_tool_event(existing: dict, incoming: dict) -> dict:
+    merged = {**existing, **incoming}
+    if not incoming.get("label") and existing.get("label"):
+        merged["label"] = existing["label"]
+    if incoming.get("args") in (None, "") and existing.get("args") not in (None, ""):
+        merged["args"] = existing["args"]
+    if incoming.get("result") in (None, "") and existing.get("result") not in (None, ""):
+        merged["result"] = existing["result"]
+    if incoming.get("raw") and existing.get("raw"):
+        merged["raw"] = {**existing["raw"], **incoming["raw"]}
+    return merged
+
+
+def upsert_hermes_tool_event(tool_events: List[dict], tool_event: dict) -> None:
+    if not isinstance(tool_event, dict):
+        return
+    tool_id = str(tool_event.get("id") or "")
+    if tool_id:
+        for index, existing in enumerate(tool_events):
+            if str(existing.get("id") or "") == tool_id:
+                tool_events[index] = _merge_hermes_tool_event(existing, tool_event)
+                return
+    tool_events.append(tool_event)
+
+
 def normalize_hermes_run_event(event: dict) -> dict:
     if not isinstance(event, dict):
         return {}
@@ -4542,7 +4634,10 @@ async def _create_hermes_run(session, submission: dict, config: dict) -> Tuple[s
         f"{config['base_url']}/runs",
         json=payload,
         headers=_hermes_chat_headers(config, submission["chat_id"]),
-        timeout=aiohttp.ClientTimeout(total=60, connect=10),
+        timeout=aiohttp.ClientTimeout(
+            total=HERMES_RUN_CREATE_TIMEOUT_SECONDS,
+            connect=HERMES_RUN_CONNECT_TIMEOUT_SECONDS,
+        ),
         allow_redirects=False,
     ) as resp:
         if resp.status < 200 or resp.status >= 300:
@@ -4574,7 +4669,7 @@ async def _stop_hermes_run(session, submission: dict, config: dict, run_id: str)
             f"{config['base_url']}/runs/{run_id}/stop",
             json={},
             headers=_hermes_chat_headers(config, submission["chat_id"]),
-            timeout=aiohttp.ClientTimeout(total=30, connect=5),
+            timeout=aiohttp.ClientTimeout(total=HERMES_RUN_STOP_TIMEOUT_SECONDS, connect=5),
             allow_redirects=False,
         ) as resp:
             if resp.status >= 400:
@@ -4588,7 +4683,10 @@ async def _iter_hermes_run_events(session, submission: dict, config: dict, reque
     async with session.get(
         f"{config['base_url']}/runs/{run_id}/events",
         headers=_hermes_chat_headers(config, submission["chat_id"]),
-        timeout=aiohttp.ClientTimeout(total=300, connect=10),
+        timeout=aiohttp.ClientTimeout(
+            total=HERMES_RUN_EVENT_TIMEOUT_SECONDS,
+            connect=HERMES_RUN_CONNECT_TIMEOUT_SECONDS,
+        ),
         allow_redirects=False,
     ) as resp:
         if resp.status != 200:
@@ -4637,7 +4735,7 @@ async def _consume_hermes_run(submission: dict, config: dict, request: Request, 
 
             tool_event = event.get("tool_event")
             if tool_event:
-                tool_events.append(tool_event)
+                upsert_hermes_tool_event(tool_events, tool_event)
                 if stream:
                     yield json.dumps({"tool": tool_event})
 
@@ -4688,9 +4786,10 @@ async def _consume_hermes_run(submission: dict, config: dict, request: Request, 
         if stream:
             yield json.dumps({"done": True})
         else:
+            clean_thinking = sanitize_visible_duplicate_thinking(full_response, full_thinking)
             yield json.dumps({
                 "content": full_response,
-                "thinking": full_thinking,
+                "thinking": clean_thinking,
                 "references": references,
                 "tools": tool_events,
             })
@@ -4762,7 +4861,7 @@ async def _call_hermes_non_stream(submission: dict, config: dict) -> dict:
             f"{config['base_url']}/chat/completions",
             json=payload,
             headers=_hermes_chat_headers(config, submission["chat_id"]),
-            timeout=aiohttp.ClientTimeout(total=300, connect=10),
+            timeout=aiohttp.ClientTimeout(total=HERMES_CHAT_TIMEOUT_SECONDS, connect=10),
             allow_redirects=False,
         ) as resp:
             if resp.status != 200:
@@ -4781,6 +4880,7 @@ async def _call_hermes_non_stream(submission: dict, config: dict) -> dict:
 
     content = _extract_openai_content(message)
     thinking = _extract_openai_thinking(message) if submission["use_thinking"] else ""
+    thinking = sanitize_visible_duplicate_thinking(content, thinking)
     save_assistant_message(db, submission["chat_id"], submission["message"], content, thinking)
     return {"content": content, "thinking": thinking, "references": references}
 
@@ -4886,7 +4986,7 @@ async def _stream_hermes_chat_chunks(submission: dict, config: dict) -> AsyncGen
             f"{config['base_url']}/chat/completions",
             json=payload,
             headers=_hermes_chat_headers(config, submission["chat_id"]),
-            timeout=aiohttp.ClientTimeout(total=300, connect=10),
+            timeout=aiohttp.ClientTimeout(total=HERMES_CHAT_TIMEOUT_SECONDS, connect=10),
             allow_redirects=False,
         ) as resp:
             if resp.status != 200:

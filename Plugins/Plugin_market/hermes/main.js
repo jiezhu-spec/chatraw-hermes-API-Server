@@ -182,7 +182,7 @@ After enabling, ChatRaw only allows remote Hermes Base URLs explicitly listed in
         }
     };
 
-    let active = Boolean(ChatRaw.storage.get(STORAGE_ACTIVE_KEY, false, PLUGIN_ID));
+    let active = Boolean(ChatRaw.storage.get(STORAGE_ACTIVE_KEY, true, PLUGIN_ID));
     let settings = {
         baseUrl: DEFAULT_BASE_URL,
         model: DEFAULT_MODEL,

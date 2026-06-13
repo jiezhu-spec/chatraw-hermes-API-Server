@@ -278,6 +278,24 @@ class HermesBridgeTests(unittest.IsolatedAsyncioTestCase):
 
         result = await main.hermes_health(JsonRequest(
             url="http://testserver/api/hermes/health",
+            headers={"referer": "http://testserver/"},
+            fetch_site=None,
+        ))
+        status, data = self.decode_result(result)
+        self.assertEqual(status, 200)
+        self.assertTrue(data["success"])
+
+        result = await main.hermes_health(JsonRequest(
+            url="http://testserver/api/hermes/health",
+            headers={"referer": "http://evil.test/"},
+            fetch_site=None,
+        ))
+        status, data = self.decode_result(result)
+        self.assertEqual(status, 403)
+        self.assertFalse(data["success"])
+
+        result = await main.hermes_health(JsonRequest(
+            url="http://testserver/api/hermes/health",
             fetch_site="none",
         ))
         status, data = self.decode_result(result)
@@ -872,6 +890,52 @@ class HermesBridgeTests(unittest.IsolatedAsyncioTestCase):
         approval = main.normalize_hermes_run_event({"type": "run.requires_action"})
         self.assertTrue(approval["approval_required"])
         self.assertIn("approval", approval["error"])
+        approval_tool = main.normalize_hermes_run_event({
+            "type": "tool.complete",
+            "name": "approval",
+            "tool_id": "approval-1",
+            "result": "ChatRaw bridge auto-approved this Hermes request once.",
+        })
+        self.assertFalse(approval_tool["approval_required"])
+        self.assertEqual(approval_tool["tool_event"]["name"], "approval")
+
+    def test_hermes_tool_event_upsert_merges_incremental_details(self):
+        tool_events = []
+        main.upsert_hermes_tool_event(tool_events, {
+            "phase": "progress",
+            "id": "call-1",
+            "name": "terminal",
+            "label": "date",
+        })
+        main.upsert_hermes_tool_event(tool_events, {
+            "phase": "complete",
+            "id": "call-1",
+            "name": "terminal",
+            "args": "date",
+            "result": {"success": True, "output": "Sat Jun 13"},
+        })
+
+        self.assertEqual(len(tool_events), 1)
+        self.assertEqual(tool_events[0]["phase"], "complete")
+        self.assertEqual(tool_events[0]["label"], "date")
+        self.assertEqual(tool_events[0]["args"], "date")
+        self.assertEqual(tool_events[0]["result"]["output"], "Sat Jun 13")
+
+    def test_duplicate_visible_thinking_is_stripped_conservatively(self):
+        content = "我来展示一下能力。\n\n以上就是我的完整能力列表。"
+        self.assertEqual(main.sanitize_visible_duplicate_thinking(content, content), "")
+        self.assertEqual(
+            main.sanitize_visible_duplicate_thinking(
+                "第一段可见正文比较长，用来描述工具能力和本地运行环境。\n"
+                "第二段可见正文也比较长，用来描述搜索、终端和技能调用。\n"
+                "第三段可见正文继续说明，可以处理代码、文件、服务和 GitHub 项目。",
+                "第一段可见正文比较长，用来描述工具能力和本地运行环境。\n"
+                "第三段可见正文继续说明，可以处理代码、文件、服务和 GitHub 项目。",
+            ),
+            "",
+        )
+        private_thinking = "Need inspect config first, then answer from verified runtime state."
+        self.assertEqual(main.sanitize_visible_duplicate_thinking(content, private_thinking), private_thinking)
 
     async def test_hermes_runs_stream_converts_events_and_saves(self):
         self.enable_hermes(api_mode=main.HERMES_API_MODE_RUNS)
@@ -880,6 +944,7 @@ class HermesBridgeTests(unittest.IsolatedAsyncioTestCase):
             b'event: message.delta\ndata: {"delta":"Hello "}\n\n',
             b'event: message.delta\ndata: {"delta":{"reasoning_content":"Plan"}}\n\n',
             b'event: tool.progress\ndata: {"name":"terminal","tool_id":"call-1","message":"date"}\n\n',
+            b'event: tool.complete\ndata: {"name":"terminal","tool_id":"call-1","arguments":"date","result":{"success":true,"output":"Sat Jun 13"}}\n\n',
             b'data: {"output_text":"world"}\n\n',
             b'event: run.completed\ndata: {}\n\n',
         ]
@@ -904,6 +969,8 @@ class HermesBridgeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(tool_chunks[0]["name"], "terminal")
         self.assertEqual(tool_chunks[0]["id"], "call-1")
         self.assertEqual(tool_chunks[0]["label"], "date")
+        self.assertEqual(tool_chunks[1]["phase"], "complete")
+        self.assertEqual(tool_chunks[1]["result"]["output"], "Sat Jun 13")
         self.assertTrue(any('"done": true' in chunk for chunk in stream_chunks))
 
         chat_id = json.loads(stream_chunks[0])["chat_id"]
@@ -914,12 +981,67 @@ class HermesBridgeTests(unittest.IsolatedAsyncioTestCase):
         messages = main.db.get_messages(chat_id)
         self.assertEqual(messages[1].content, "Hello world")
         self.assertEqual(messages[1].thinking, "Plan")
-        self.assertEqual(messages[1].tool_calls[0]["phase"], "progress")
+        self.assertEqual(len(messages[1].tool_calls), 1)
+        self.assertEqual(messages[1].tool_calls[0]["phase"], "complete")
         self.assertEqual(messages[1].tool_calls[0]["name"], "terminal")
+        self.assertEqual(messages[1].tool_calls[0]["label"], "date")
+        self.assertEqual(messages[1].tool_calls[0]["result"]["output"], "Sat Jun 13")
         api_messages = await main.get_messages(chat_id)
         self.assertEqual(api_messages[1]["content"], "Hello world")
         self.assertEqual(api_messages[1]["thinking"], "Plan")
+        self.assertEqual(len(api_messages[1]["toolCalls"]), 1)
         self.assertEqual(api_messages[1]["toolCalls"][0]["name"], "terminal")
+
+    async def test_hermes_runs_event_timeout_uses_configured_value(self):
+        self.enable_hermes(api_mode=main.HERMES_API_MODE_RUNS)
+        self.configure_chat(stream=True)
+        original_timeout = main.HERMES_RUN_EVENT_TIMEOUT_SECONDS
+        main.HERMES_RUN_EVENT_TIMEOUT_SECONDS = 1234
+        self.addCleanup(lambda: setattr(main, "HERMES_RUN_EVENT_TIMEOUT_SECONDS", original_timeout))
+        fake_session = self.patch_session(FakeHermesSession(
+            post_responses=[FakeHermesResponse(json_data={"run_id": "run-timeout-config"})],
+            get_response=FakeHermesResponse(stream_chunks=[
+                b'event: run.completed\ndata: {}\n\n',
+            ]),
+        ))
+
+        response = await main.hermes_chat(JsonRequest({"message": "run timeout config"}))
+        await self.collect_stream(response)
+
+        self.assertEqual(fake_session.gets[0]["timeout"].total, 1234)
+        self.assertEqual(fake_session.gets[0]["timeout"].connect, main.HERMES_RUN_CONNECT_TIMEOUT_SECONDS)
+
+    def test_bridge_instruction_backgrounds_long_commands(self):
+        bridge_path = os.path.join(REPO_ROOT, "bridge", "hermes_chatraw_bridge.py")
+        with open(bridge_path, "r", encoding="utf-8") as f:
+            source = f.read()
+
+        self.assertIn("long-running operations", source)
+        self.assertIn("docker compose pull/up/build", source)
+        self.assertIn("start the operation in the background", source)
+        self.assertIn("tail -20", source)
+
+    async def test_hermes_runs_stream_strips_duplicate_thinking_when_saved(self):
+        self.enable_hermes(api_mode=main.HERMES_API_MODE_RUNS)
+        self.configure_chat(stream=True)
+        event_chunks = [
+            b'data: {"delta":{"content":"Visible answer."}}\n\n',
+            b'data: {"delta":{"thinking":"Visible answer."}}\n\n',
+            b'event: run.completed\ndata: {}\n\n',
+        ]
+        self.patch_session(FakeHermesSession(
+            post_responses=[FakeHermesResponse(json_data={"run_id": "run-stream-clean-thinking"})],
+            get_response=FakeHermesResponse(stream_chunks=event_chunks),
+        ))
+
+        response = await main.hermes_chat(JsonRequest({"message": "run please", "use_thinking": True}))
+        stream_chunks = await self.collect_stream(response)
+        chat_id = json.loads(stream_chunks[0])["chat_id"]
+
+        self.assertTrue(any('"thinking": "Visible answer."' in chunk for chunk in stream_chunks))
+        messages = main.db.get_messages(chat_id)
+        self.assertEqual(messages[1].content, "Visible answer.")
+        self.assertEqual(messages[1].thinking, "")
 
     async def test_hermes_runs_non_stream_aggregates_events_and_saves(self):
         self.enable_hermes(api_mode=main.HERMES_API_MODE_RUNS)
@@ -953,6 +1075,29 @@ class HermesBridgeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(messages[1].content, "Final answer")
         self.assertEqual(messages[1].thinking, "Reason")
         self.assertEqual(messages[1].tool_calls[0]["name"], "skill_view")
+
+    async def test_hermes_runs_non_stream_strips_visible_duplicate_thinking(self):
+        self.enable_hermes(api_mode=main.HERMES_API_MODE_RUNS)
+        self.configure_chat(stream=False)
+        event_chunks = [
+            b'data: {"delta":{"content":"Visible answer."}}\n\n',
+            b'data: {"delta":{"thinking":"Visible answer."}}\n\n',
+            b'event: run.succeeded\ndata: {}\n\n',
+        ]
+        self.patch_session(FakeHermesSession(
+            post_responses=[FakeHermesResponse(json_data={"id": "run-clean-thinking"})],
+            get_response=FakeHermesResponse(stream_chunks=event_chunks),
+        ))
+
+        result = await main.hermes_chat(JsonRequest({"message": "non stream run", "use_thinking": True}))
+        status, data = self.decode_result(result)
+
+        self.assertEqual(status, 200)
+        self.assertEqual(data["content"], "Visible answer.")
+        self.assertEqual(data["thinking"], "")
+        messages = main.db.get_messages(data["chat_id"])
+        self.assertEqual(messages[1].content, "Visible answer.")
+        self.assertEqual(messages[1].thinking, "")
 
     def test_message_metadata_migration_reads_legacy_thinking_without_context_leak(self):
         tmpdir = tempfile.mkdtemp(prefix="chatraw-legacy-db-")

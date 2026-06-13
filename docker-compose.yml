@@ -1,16 +1,20 @@
 services:
-  chatraw:
-    image: docker.io/massif01/chatraw:latest
-    container_name: chatraw
+  chatraw-hermes:
+    build: .
+    image: chatraw-hermes:latest
+    container_name: chatraw-hermes
     # Use host network mode to access LAN services (e.g., local LLM on 192.168.x.x)
     # 使用 host 网络模式以访问局域网服务（如本地部署的 LLM）
     network_mode: host
     volumes:
-      - chatraw_data:/app/data
+      - ./data:/app/data
     environment:
-      - PORT=51111
+      - PORT=51234
       - DATA_DIR=/app/data
+      - HERMES_RUN_EVENT_TIMEOUT=1800
+      - HERMES_BRIDGE_TIMEOUT=1800
+      - HERMES_CHAT_TIMEOUT=1800
+      - HERMES_RUN_CREATE_TIMEOUT=120
+      - HERMES_RUN_STOP_TIMEOUT=30
+      - HERMES_RUN_CONNECT_TIMEOUT=10
     restart: unless-stopped
-
-volumes:
-  chatraw_data:
