@@ -41,8 +41,8 @@ jobs:
           platforms: linux/amd64,linux/arm64
           push: true
           tags: |
-            ghcr.io/jiezhu-spec/chatraw-hermes:${{ steps.version.outputs.VERSION }}
-            ghcr.io/jiezhu-spec/chatraw-hermes:latest
+            ghcr.io/jiezhu-spec/chatraw-hermes-api-server:${{ steps.version.outputs.VERSION }}
+            ghcr.io/jiezhu-spec/chatraw-hermes-api-server:latest
 
       - name: Create Release
         uses: softprops/action-gh-release@v2

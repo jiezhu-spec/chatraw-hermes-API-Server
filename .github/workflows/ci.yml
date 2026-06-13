@@ -97,7 +97,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Build Docker image
-        run: docker build -t chatraw-hermes:test .
+        run: docker build -t chatraw-hermes-api-server:test .
 
       - name: Smoke test
-        run: docker run --rm chatraw-hermes:test python -c "print('Docker OK')"
+        run: docker run --rm chatraw-hermes-api-server:test python -c "print('Docker OK')"

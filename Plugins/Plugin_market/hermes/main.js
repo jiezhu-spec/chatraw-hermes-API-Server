@@ -1,7 +1,7 @@
 /**
  * Hermes Router Plugin
  *
- * Routes selected ChatRaw messages to the host-approved Hermes bridge.
+ * Routes selected ChatRaw messages to the host-approved Hermes API Server.
  * The plugin never calls Hermes chat directly and never reads API keys.
  */
 (function(ChatRaw) {
@@ -13,7 +13,7 @@
     const STORAGE_ACTIVE_KEY = 'active';
     const DEFAULT_BASE_URL = 'http://127.0.0.1:8642/v1';
     const DEFAULT_MODEL = 'hermes-agent';
-    const DEFAULT_API_MODE = 'chat_completions';
+    const DEFAULT_API_MODE = 'runs';
     const REMOTE_URLS_MAX_LENGTH = 4000;
     const REMOTE_URL_MAX_LENGTH = 300;
 
@@ -76,10 +76,10 @@ The allowlist should contain only the Hermes API Server Base URLs you currently 
 
 After enabling, ChatRaw only allows remote Hermes Base URLs explicitly listed in the allowlist. If you modify the allowlist, you must confirm these risks again.`,
             model: 'Model name',
-            apiMode: 'Execution mode',
-            apiModeChat: 'Chat Completions',
-            apiModeRuns: 'Runs',
-            apiModeHint: 'Runs uses Hermes /v1/runs while keeping the ChatRaw chat UI.',
+            apiMode: 'API endpoint',
+            apiModeChat: 'Chat Completions endpoint',
+            apiModeRuns: 'Runs endpoint',
+            apiModeHint: 'Runs uses the Hermes API Server /v1/runs endpoint while keeping the ChatRaw chat UI.',
             apiKey: 'API Server Key (if required)',
             apiKeyHint: 'Stored by ChatRaw backend. Official Hermes requires API_SERVER_KEY; leave empty only for compatible servers that do not require auth.',
             apiKeySaved: 'API key saved',
@@ -152,10 +152,10 @@ After enabling, ChatRaw only allows remote Hermes Base URLs explicitly listed in
 
 启用后，ChatRaw 只会放行明确写在允许列表里的远程 Base URL。修改允许列表后，需要重新确认这些风险。`,
             model: '模型名称',
-            apiMode: '执行模式',
-            apiModeChat: 'Chat Completions',
-            apiModeRuns: 'Runs',
-            apiModeHint: 'Runs 使用 Hermes /v1/runs，同时保留 ChatRaw 聊天 UI。',
+            apiMode: 'API 端点',
+            apiModeChat: 'Chat Completions 端点',
+            apiModeRuns: 'Runs 端点',
+            apiModeHint: 'Runs 使用 Hermes API Server /v1/runs，同时保留 ChatRaw 聊天 UI。',
             apiKey: 'API Server Key（如服务要求）',
             apiKeyHint: '由 ChatRaw 后端保存。官方 Hermes 需要 API_SERVER_KEY；仅无鉴权兼容服务可留空。',
             apiKeySaved: 'API key 已保存',
@@ -315,7 +315,7 @@ After enabling, ChatRaw only allows remote Hermes Base URLs explicitly listed in
         const allowedRemoteInput = document.getElementById('hermes-allowed-remote-base-urls');
         const keyInput = document.getElementById('hermes-api-key');
         const sessionKeyInput = document.getElementById('hermes-session-key');
-        const apiMode = apiModeInput?.value === 'runs' ? 'runs' : DEFAULT_API_MODE;
+        const apiMode = apiModeInput?.value === 'chat_completions' ? 'chat_completions' : DEFAULT_API_MODE;
         return {
             baseUrl: (baseUrlInput?.value || '').trim() || DEFAULT_BASE_URL,
             model: (modelInput?.value || '').trim() || DEFAULT_MODEL,
@@ -744,7 +744,7 @@ After enabling, ChatRaw only allows remote Hermes Base URLs explicitly listed in
         if (baseUrlInput) baseUrlInput.value = settings.baseUrl || DEFAULT_BASE_URL;
         if (allowedRemoteInput) allowedRemoteInput.value = settings.allowedRemoteBaseUrls || '';
         if (modelInput) modelInput.value = settings.model || DEFAULT_MODEL;
-        if (apiModeInput) apiModeInput.value = settings.apiMode === 'runs' ? 'runs' : DEFAULT_API_MODE;
+        if (apiModeInput) apiModeInput.value = settings.apiMode === 'chat_completions' ? 'chat_completions' : DEFAULT_API_MODE;
         if (keyInput) keyInput.placeholder = maskedApiKey ? t('apiKeyPlaceholder') : '';
         if (sessionKeyInput) sessionKeyInput.placeholder = maskedSessionKey ? t('sessionKeyPlaceholder') : '';
         updateApiKeyStatus();

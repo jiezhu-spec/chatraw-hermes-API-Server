@@ -1,8 +1,8 @@
 services:
-  chatraw-hermes:
+  chatraw-hermes-api-server:
     build: .
-    image: chatraw-hermes:latest
-    container_name: chatraw-hermes
+    image: chatraw-hermes-api-server:latest
+    container_name: chatraw-hermes-api-server
     # Use host network mode to access LAN services (e.g., local LLM on 192.168.x.x)
     # 使用 host 网络模式以访问局域网服务（如本地部署的 LLM）
     network_mode: host
@@ -12,7 +12,6 @@ services:
       - PORT=51234
       - DATA_DIR=/app/data
       - HERMES_RUN_EVENT_TIMEOUT=1800
-      - HERMES_BRIDGE_TIMEOUT=1800
       - HERMES_CHAT_TIMEOUT=1800
       - HERMES_RUN_CREATE_TIMEOUT=120
       - HERMES_RUN_STOP_TIMEOUT=30

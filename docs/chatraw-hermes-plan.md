@@ -1,163 +1,104 @@
-# ChatRaw-Hermes 项目计划
+# ChatRaw-Hermes API Server 项目计划
 
 ## 目标
 
-把 Hermes Client 中验证过的能力移植到 ChatRaw：
+把 ChatRaw-Hermes 独立成 API Server 专用仓库：`jiezhu-spec/chatraw-hermes-API-Server`。
 
-- 通过 ChatRaw 向 Hermes CLI / TUI Gateway 链路发送消息。
-- 对话正文默认直接展示。
-- 思考过程、工具调用、命令参数、执行结果默认折叠，用户可展开查看。
-- 保留 ChatRaw 的轻量部署体验、Docker 运行方式和本地插件机制。
-- 用 GitHub 管理完整开发流程：issues、分支、pull request、Actions、打包和部署验证。
-
-## 当前基线
-
-- 新仓库：`jiezhu-spec/ChatRaw-Hermes`
-- 上游源：`massif-01/ChatRaw`
-- 默认分支：`main`
-- 上游基线提交：`0cf2a9b`
-- 99 现网 ChatRaw 目录：`/home/rm01/ChatRaw`
-- 99 现网服务端口：`51111`
-- Hermes Client 参考实现：
-  - UI：`http://10.10.99.99:18888/`
-  - API：`http://10.10.99.99:18889/api`
-  - TUI Gateway 事件流：`message.delta`、`reasoning.delta`、`tool.start`、`tool.complete`、`message.complete`
+这个仓库只负责 ChatRaw 到 Hermes API Server 的安全路由和前端呈现，不包含 CLI bridge 实现。默认链路是 ChatRaw 后端调用 Hermes API Server `/v1/runs`，并把 Hermes 事件流转换为 ChatRaw 的正文、思考过程和 tool activity。
 
 ## 设计原则
 
-1. **先对齐数据链，再美化 UI。**
-   后端必须先能稳定输出结构化事件，否则前端只能伪折叠。
+1. **API Server 单一路线。**
+   默认 Base URL 是 `http://127.0.0.1:8642/v1`，默认 model 是 `hermes-agent`，默认 API endpoint 是 `runs`。
 
-2. **正文优先，过程折叠。**
-   用户最关心的回答正文默认显示；工具、代码、参数和结果默认收起。
+2. **Key 只保存在后端。**
+   浏览器插件只保存路由选择和 Base URL；API Server Key 由 ChatRaw 后端保存和注入。
 
-3. **兼容 OpenAI 流式接口。**
-   不破坏 ChatRaw 现有 OpenAI-compatible 模型配置；Hermes 能力作为增强路径。
+3. **正文优先，过程折叠。**
+   对话内容默认显示；工具调用、参数、结果和思考过程保持低视觉权重，可展开检查。
 
-4. **不把音频依赖放进默认安装。**
-   `faster-whisper` 和音频智能分析链路当前不接入默认版本，避免触发大依赖下载和后台进程干扰。
+4. **每个阶段走 GitHub 标准流程。**
+   issue 记录需求，feature branch 承载实现，PR 做评审入口，Actions 验证测试和打包。
 
-5. **每个阶段有 PR 和验证。**
-   每个功能 issue 对应单独分支和 PR；Actions 必须能证明代码可构建、可导入、Docker 可打包。
+## 当前基线
 
-## 阶段拆分
+- 仓库：`jiezhu-spec/chatraw-hermes-API-Server`
+- 上游来源：`jiezhu-spec/ChatRaw-Hermes`
+- ChatRaw 端口：`51234`
+- Hermes API Server：`http://127.0.0.1:8642/v1`
+- Docker Compose 服务：`chatraw-hermes-api-server`
+- Release 镜像：`ghcr.io/jiezhu-spec/chatraw-hermes-api-server`
 
-### Phase 0: 项目治理与基线
+## Phase 0: 仓库拆分
 
-- 创建 `ChatRaw-Hermes` 仓库。
-- 保留上游 `upstream` remote。
-- 新建 GitHub issues 和里程碑。
-- 调整 Actions，使 CI 在 push、PR、手动触发下都能跑。
-- 将 release 打包目标改为本仓库可用的 GHCR / GitHub Release 路线，避免继续写死 `massif01/chatraw`。
-- 记录 99 现网手工补丁与上游差异。
-
-验收：
-
-- `main` 已推送到 `jiezhu-spec/ChatRaw-Hermes`。
-- `python -m py_compile backend/main.py` 通过。
-- `python -m compileall backend` 通过。
-- GitHub issue、分支、PR 流程可用。
-
-### Phase 1: 后端 Hermes 事件模型
-
-- 定义 ChatRaw 内部事件格式：
-  - `message.delta`
-  - `thinking.delta`
-  - `tool.start`
-  - `tool.complete`
-  - `message.complete`
-  - `error`
-- 新增 Hermes adapter，把 Hermes/TUI Gateway 或 OpenAI-compatible bridge 的事件统一映射为 ChatRaw 事件。
-- 保留原 `/api/chat` 行为，同时新增或扩展流式响应格式，避免破坏已有前端。
-- 保存 assistant 消息时保留：
-  - 正文 `content`
-  - 思考 `thinking`
-  - 工具调用 `tool_calls`
-  - 图片/附件引用（后续扩展）
+- 创建新 GitHub 仓库。
+- 保留 upstream 指向原 `ChatRaw-Hermes`。
+- 创建 issue 记录 API Server 专用改造。
+- 从 feature branch 提 PR。
+- 使用 Actions 验证 Python、前端静态资源和 Docker build。
 
 验收：
 
-- 单元测试覆盖事件解析和降级逻辑。
-- 现有 OpenAI-compatible 模型路径仍可用。
-- Hermes 工具调用能被保存为结构化数据，而不是拼接到正文里。
+- main 保持可部署。
+- PR 关联 issue。
+- Actions 通过后再合并。
 
-### Phase 2: 前端渲染迁移
+## Phase 1: API Server 默认链路
 
-参考 Hermes Client 的有效设计：
-
-- Markdown：GFM 表格、列表、引用、代码块。
-- 字号：
-  - 正文 `14px`
-  - 行高 `1.65`
-  - 工具标题约 `11.5px`
-  - 行内代码约 `12.8px`
-  - 输入框约 `14.4px`
-- 气泡：
-  - padding `8px 16px`
-  - 最大宽度桌面约 `70%`
-  - 工具/思考块低视觉权重
-- 默认折叠：
-  - `Thinking`
-  - `Tool execution`
-  - 每个工具调用的 args/result
+- 默认 `apiMode` 改为 `runs`。
+- 插件 manifest 和前端设置默认 `runs`。
+- 后端缺省配置也走 `/v1/runs`。
+- 保留 Chat Completions endpoint 作为 API Server 兼容端点，不作为默认路径。
 
 验收：
 
-- 普通对话内容默认显示。
-- 工具过程默认收起，可展开查看参数和结果。
-- 长表格、长代码、长命令输出不会撑破布局。
-- 移动端不重叠、不横向撑破。
+- 缺少 `apiMode` 的旧配置也默认走 `/v1/runs`。
+- `/api/hermes/health` 通过 `/v1/models` 检查 API Server。
+- `/api/hermes/chat` 使用同一 ChatRaw chat id 映射为稳定 Hermes session id。
 
-### Phase 3: 持久化会话与延迟优化
+## Phase 2: Tool Activity 和事件归一化
 
-- 支持复用 Hermes session key。
-- 避免每轮重新创建 CLI 进程。
-- 删除会话时向 Hermes/TUI Gateway 发 `session.close` 或提供清理任务。
-- 显示连接状态、运行中工具状态和错误恢复提示。
+- 支持 message delta、thinking delta、tool start/progress/complete、error、terminal event。
+- tool event 合并到同一 `tool_id`。
+- 兼容 API Server 同时发送 delta 和最终完整快照的情况，避免正文重复。
 
 验收：
 
-- 同一 ChatRaw 会话内第二轮延迟显著低于第一轮。
-- 删除/关闭会话后不长期积累 `slash_worker`。
-- 99 上连续多轮问答无串话。
+- `介绍下你的能力` 不重复正文。
+- 文件、时间、PPT skill 等工具链路能显示 tool activity。
+- 保存的 `messages.tool_calls` 包含工具名、阶段、参数和结果。
 
-### Phase 4: 打包、部署和回归
+## Phase 3: 打包与部署
 
-- GitHub Actions：
-  - Python 语法和导入检查。
-  - 前端静态资源检查。
-  - Docker build。
-  - 可选安全扫描。
-- Release：
-  - tag 触发 GitHub Release。
-  - 构建 Docker image。
-  - 生成部署说明。
-- 99 灰度部署：
-  - 新容器或新端口验证。
-  - 不直接破坏现有 `51111`。
-  - 验证后再切换。
+- Docker Compose 服务名和镜像名改为 `chatraw-hermes-api-server`。
+- CI Docker build 使用 `chatraw-hermes-api-server:test`。
+- Release 发布到 `ghcr.io/jiezhu-spec/chatraw-hermes-api-server`。
 
 验收：
 
-- Actions 全绿。
-- Docker 镜像可启动。
-- `/api/models/verify`、`/api/chat`、Hermes 流式工具调用均通过。
+- `docker compose up -d --build` 可启动。
+- GitHub Actions 全绿。
+- 99 服务器从 GitHub clone 后可按 README 启动。
 
-## GitHub Issue 规划
+## 本地验证命令
 
-1. `Project setup: baseline, CI, release workflow`
-2. `Backend: normalize Hermes streaming events`
-3. `Backend: persist thinking and tool calls`
-4. `Frontend: Markdown/GFM/code rendering upgrade`
-5. `Frontend: collapsible thinking and tool execution blocks`
-6. `Runtime: persistent Hermes session lifecycle`
-7. `Packaging: Docker/GHCR/release artifacts`
-8. `Deployment: 99 server gray release and regression checklist`
+```bash
+python3 -m venv .venv
+.venv/bin/python -m pip install -r backend/requirements.txt
+.venv/bin/python -m py_compile backend/main.py
+.venv/bin/python -m unittest backend.test_hermes_bridge
+node --check backend/static/app.js
+docker build -t chatraw-hermes-api-server:test .
+```
 
-## 风险点
+## GitHub 操作命令
 
-- 99 现网目录不是 git 仓库，不能直接当可信源；必须以 GitHub 上游为基线，挑选补丁。
-- 上游已有 Hermes 相关提交，不能回退覆盖。
-- Hermes Client 删除会话后 `slash_worker` 仍可能残留，ChatRaw-Hermes 需要显式生命周期管理。
-- GitHub Actions 不能继续写死 DockerHub `massif01/chatraw`。
-- `faster-whisper` 会触发大依赖和模型下载，当前默认版本不接入该插件链路。
+```bash
+gh issue create -R jiezhu-spec/chatraw-hermes-API-Server --title "API Server only baseline" --body "Split API Server mode into a dedicated repository."
+git checkout -b codex/api-server-only-baseline
+git add <files>
+git commit -m "feat: create API server only baseline"
+git push -u origin codex/api-server-only-baseline
+gh pr create -R jiezhu-spec/chatraw-hermes-API-Server --base main --head codex/api-server-only-baseline
+gh run list -R jiezhu-spec/chatraw-hermes-API-Server --branch codex/api-server-only-baseline
+```

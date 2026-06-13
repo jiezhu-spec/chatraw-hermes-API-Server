@@ -152,7 +152,8 @@ class HermesBridgeTests(unittest.IsolatedAsyncioTestCase):
         base_url="http://127.0.0.1:8642/v1",
         model="hermes-agent",
         session_key="",
-        api_mode=None,
+        api_mode=main.HERMES_API_MODE_CHAT_COMPLETIONS,
+        omit_api_mode=False,
         allowed_remote_base_urls="",
         remote_warning_accepted=False,
         remote_warning_accepted_for="",
@@ -166,7 +167,7 @@ class HermesBridgeTests(unittest.IsolatedAsyncioTestCase):
             "baseUrl": base_url,
             "model": model,
         }
-        if api_mode is not None:
+        if not omit_api_mode:
             settings_values["apiMode"] = api_mode
         if allowed_remote_base_urls:
             settings_values["allowedRemoteBaseUrls"] = allowed_remote_base_urls
@@ -245,7 +246,7 @@ class HermesBridgeTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Hermes plugin is not enabled", data["error"])
 
     async def test_origin_gate_allows_same_origin_and_explicit_cors_only(self):
-        self.enable_hermes()
+        self.enable_hermes(omit_api_mode=True)
         fake_session = self.patch_session(FakeHermesSession())
 
         for fetch_site in ("cross-site", "same-site", "unknown", None):
@@ -750,12 +751,15 @@ class HermesBridgeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(messages[1].content, "assistant answer")
         self.assertEqual(messages[1].thinking, "")
 
-    async def test_missing_api_mode_defaults_to_chat_completions_without_run(self):
-        self.enable_hermes()
+    async def test_missing_api_mode_defaults_to_runs(self):
+        self.enable_hermes(omit_api_mode=True)
         self.configure_chat(stream=False)
         fake_session = self.patch_session(FakeHermesSession(post_response=FakeHermesResponse(
-            json_data={"choices": [{"message": {"content": "default answer"}}]}
-        )))
+            json_data={"run_id": "run-default-mode"}
+        ), get_response=FakeHermesResponse(stream_chunks=[
+            b'event: message.delta\ndata: {"delta":"default answer"}\n\n',
+            b'event: run.completed\ndata: {}\n\n',
+        ])))
 
         result = await main.hermes_chat(JsonRequest({"message": "default mode"}))
         status, data = self.decode_result(result)
@@ -763,9 +767,9 @@ class HermesBridgeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(status, 200)
         self.assertEqual(data["content"], "default answer")
         self.assertEqual(len(fake_session.posts), 1)
-        self.assertEqual(fake_session.posts[0]["url"], "http://127.0.0.1:8642/v1/chat/completions")
+        self.assertEqual(fake_session.posts[0]["url"], "http://127.0.0.1:8642/v1/runs")
+        self.assertEqual(fake_session.gets[0]["url"], "http://127.0.0.1:8642/v1/runs/run-default-mode/events")
         self.assertFalse(fake_session.posts[0]["allow_redirects"])
-        self.assertEqual(fake_session.gets, [])
 
     async def test_hermes_session_header_is_stable_per_chat_and_differs_across_chats(self):
         self.enable_hermes()
@@ -1011,15 +1015,33 @@ class HermesBridgeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(fake_session.gets[0]["timeout"].total, 1234)
         self.assertEqual(fake_session.gets[0]["timeout"].connect, main.HERMES_RUN_CONNECT_TIMEOUT_SECONDS)
 
-    def test_bridge_instruction_backgrounds_long_commands(self):
-        bridge_path = os.path.join(REPO_ROOT, "bridge", "hermes_chatraw_bridge.py")
-        with open(bridge_path, "r", encoding="utf-8") as f:
-            source = f.read()
+    async def test_hermes_runs_stream_deduplicates_snapshot_text_events(self):
+        self.enable_hermes(api_mode=main.HERMES_API_MODE_RUNS)
+        self.configure_chat(stream=True)
+        event_chunks = [
+            b'event: message.delta\ndata: {"delta":"Hello"}\n\n',
+            b'event: message.delta\ndata: {"content":"Hello world"}\n\n',
+            b'event: message.delta\ndata: {"content":"Hello world"}\n\n',
+            b'event: message.delta\ndata: {"delta":{"thinking":"Plan"}}\n\n',
+            b'event: message.delta\ndata: {"delta":{"thinking":"Plan more"}}\n\n',
+            b'event: run.completed\ndata: {"output_text":"Hello world"}\n\n',
+        ]
+        self.patch_session(FakeHermesSession(
+            post_responses=[FakeHermesResponse(json_data={"run_id": "run-snapshot-text"})],
+            get_response=FakeHermesResponse(stream_chunks=event_chunks),
+        ))
 
-        self.assertIn("long-running operations", source)
-        self.assertIn("docker compose pull/up/build", source)
-        self.assertIn("start the operation in the background", source)
-        self.assertIn("tail -20", source)
+        response = await main.hermes_chat(JsonRequest({"message": "run please", "use_thinking": True}))
+        stream_chunks = await self.collect_stream(response)
+        chat_id = json.loads(stream_chunks[0])["chat_id"]
+
+        content_chunks = [json.loads(chunk)["content"] for chunk in stream_chunks if '"content"' in chunk]
+        thinking_chunks = [json.loads(chunk)["thinking"] for chunk in stream_chunks if '"thinking"' in chunk]
+        self.assertEqual(content_chunks, ["Hello", " world"])
+        self.assertEqual(thinking_chunks, ["Plan", " more"])
+        messages = main.db.get_messages(chat_id)
+        self.assertEqual(messages[1].content, "Hello world")
+        self.assertEqual(messages[1].thinking, "Plan more")
 
     async def test_hermes_runs_stream_strips_duplicate_thinking_when_saved(self):
         self.enable_hermes(api_mode=main.HERMES_API_MODE_RUNS)
