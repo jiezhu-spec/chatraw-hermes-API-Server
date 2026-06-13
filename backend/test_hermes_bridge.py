@@ -928,6 +928,19 @@ class HermesBridgeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(tool_events[0]["args"], "date")
         self.assertEqual(tool_events[0]["result"]["output"], "Sat Jun 13")
 
+    def test_hermes_text_delta_drops_snapshot_repeats_and_overlaps(self):
+        existing, delta = main._append_hermes_text_delta("abc def", "abc def")
+        self.assertEqual(existing, "abc def")
+        self.assertEqual(delta, "")
+
+        existing, delta = main._append_hermes_text_delta("intro\n\nresult table", "result table")
+        self.assertEqual(existing, "intro\n\nresult table")
+        self.assertEqual(delta, "")
+
+        existing, delta = main._append_hermes_text_delta("hello wor", "world")
+        self.assertEqual(existing, "hello world")
+        self.assertEqual(delta, "ld")
+
     def test_duplicate_visible_thinking_is_stripped_conservatively(self):
         content = "我来展示一下能力。\n\n以上就是我的完整能力列表。"
         self.assertEqual(main.sanitize_visible_duplicate_thinking(content, content), "")

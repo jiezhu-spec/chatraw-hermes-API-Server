@@ -4789,11 +4789,18 @@ def _append_hermes_text_delta(existing: str, incoming: str) -> Tuple[str, str]:
         return existing, ""
     if not existing:
         return incoming, incoming
+    if incoming in existing:
+        return existing, ""
     if incoming.startswith(existing):
         suffix = incoming[len(existing):]
         return existing + suffix, suffix
     if existing.endswith(incoming):
         return existing, ""
+    max_overlap = min(len(existing), len(incoming))
+    for overlap in range(max_overlap, 0, -1):
+        if existing.endswith(incoming[:overlap]):
+            suffix = incoming[overlap:]
+            return existing + suffix, suffix
     return existing + incoming, incoming
 
 
