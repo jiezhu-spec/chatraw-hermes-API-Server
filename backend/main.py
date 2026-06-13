@@ -4791,6 +4791,10 @@ def _append_hermes_text_delta(existing: str, incoming: str) -> Tuple[str, str]:
         return incoming, incoming
     if incoming in existing:
         return existing, ""
+    compact_existing = re.sub(r"\s+", "", existing)
+    compact_incoming = re.sub(r"\s+", "", incoming)
+    if len(compact_incoming) >= 12 and compact_incoming in compact_existing:
+        return existing, ""
     if incoming.startswith(existing):
         suffix = incoming[len(existing):]
         return existing + suffix, suffix
@@ -4798,7 +4802,7 @@ def _append_hermes_text_delta(existing: str, incoming: str) -> Tuple[str, str]:
         return existing, ""
     max_overlap = min(len(existing), len(incoming))
     for overlap in range(max_overlap, 0, -1):
-        if existing.endswith(incoming[:overlap]):
+        if overlap >= 8 and existing.endswith(incoming[:overlap]):
             suffix = incoming[overlap:]
             return existing + suffix, suffix
     return existing + incoming, incoming

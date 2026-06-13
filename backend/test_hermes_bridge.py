@@ -937,9 +937,17 @@ class HermesBridgeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(existing, "intro\n\nresult table")
         self.assertEqual(delta, "")
 
-        existing, delta = main._append_hermes_text_delta("hello wor", "world")
-        self.assertEqual(existing, "hello world")
-        self.assertEqual(delta, "ld")
+        existing, delta = main._append_hermes_text_delta("我来通过 SSH登录到服务器", "我来通过 SSH 登录到服务器")
+        self.assertEqual(existing, "我来通过 SSH登录到服务器")
+        self.assertEqual(delta, "")
+
+        existing, delta = main._append_hermes_text_delta("abcdefghijklmnop", "ijklmnopqrstuvwxyz")
+        self.assertEqual(existing, "abcdefghijklmnopqrstuvwxyz")
+        self.assertEqual(delta, "qrstuvwxyz")
+
+        existing, delta = main._append_hermes_text_delta("10.9", "以下是目录")
+        self.assertEqual(existing, "10.9以下是目录")
+        self.assertEqual(delta, "以下是目录")
 
     def test_duplicate_visible_thinking_is_stripped_conservatively(self):
         content = "我来展示一下能力。\n\n以上就是我的完整能力列表。"
