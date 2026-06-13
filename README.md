@@ -23,26 +23,26 @@
 
 ---
 
-## ChatRaw-Hermes
+## ChatRaw-Hermes API Server
 
-This fork turns ChatRaw into a web front end for the **Hermes CLI agent**. The browser still uses the ChatRaw chat UI, message history, markdown rendering, plugin panel, and tool activity display, while selected messages are routed through the backend to a persistent Hermes CLI bridge.
+This fork turns ChatRaw into a web front end for a **Hermes API Server**. The browser still uses the ChatRaw chat UI, message history, markdown rendering, plugin panel, and tool activity display, while selected messages are routed through the backend to the configured Hermes API Server with a saved API Server Key.
 
-The main ChatRaw-to-Hermes chat path uses the Hermes bridge `/v1/runs` API. MCP remains part of the Hermes cooperation model: Hermes can serve capabilities to other MCP clients with `hermes mcp serve`, or import external MCP server tools with `hermes mcp add`.
+The main ChatRaw-to-Hermes chat path uses the Hermes API Server `/v1/runs` API by default. MCP remains part of the Hermes cooperation model: Hermes can serve capabilities to other MCP clients with `hermes mcp serve`, or import external MCP server tools with `hermes mcp add`. This repository is intentionally API-Server-only; the CLI bridge implementation is kept out of this repo so the two integration modes do not drift together.
 
 Current default service layout:
 
-- ChatRaw-Hermes web UI: `http://<host>:51234/`
-- Hermes CLI bridge: `http://<host>:51113/v1`
-- Default Docker Compose service: `chatraw-hermes`
-- GitHub repository: `https://github.com/jiezhu-spec/ChatRaw-Hermes.git`
+- ChatRaw-Hermes API Server web UI: `http://<host>:51234/`
+- Hermes API Server: `http://127.0.0.1:8642/v1`
+- Default Docker Compose service: `chatraw-hermes-api-server`
+- GitHub repository: `https://github.com/jiezhu-spec/chatraw-hermes-API-Server.git`
 
 Hermes run event streaming defaults to `HERMES_RUN_EVENT_TIMEOUT=1800` seconds so slow tool chains do not fail at the old 300 second HTTP limit. Compose also sets matching Hermes chat/create/stop/connect timeout knobs. Long operations such as Docker pulls, package installs, model downloads, and large builds are still expected to run as background jobs with log polling instead of blocking a single foreground terminal call.
 
 Quick clone and start:
 
 ```bash
-git clone https://github.com/jiezhu-spec/ChatRaw-Hermes.git
-cd ChatRaw-Hermes
+git clone https://github.com/jiezhu-spec/chatraw-hermes-API-Server.git
+cd chatraw-hermes-API-Server
 docker compose up -d --build
 ```
 
@@ -51,15 +51,15 @@ Local validation before opening a pull request:
 ```bash
 python3 -m venv .venv
 .venv/bin/python -m pip install -r backend/requirements.txt
-.venv/bin/python -m py_compile bridge/hermes_chatraw_bridge.py backend/main.py
+.venv/bin/python -m py_compile backend/main.py
 .venv/bin/python -m unittest backend.test_hermes_bridge
 node --check backend/static/app.js
-docker build -t chatraw-hermes:test .
+docker build -t chatraw-hermes-api-server:test .
 ```
 
-Release packaging is handled by GitHub Actions. Push a version tag such as `v0.1.0` to build and publish `ghcr.io/jiezhu-spec/chatraw-hermes:<version>` and `ghcr.io/jiezhu-spec/chatraw-hermes:latest`.
+Release packaging is handled by GitHub Actions. Push a version tag such as `v0.1.0` to build and publish `ghcr.io/jiezhu-spec/chatraw-hermes-api-server:<version>` and `ghcr.io/jiezhu-spec/chatraw-hermes-api-server:latest`.
 
-Full Hermes CLI front-end architecture, configuration, testing, packaging, and GitHub workflow notes are in [docs/hermes.md](docs/hermes.md).
+Full Hermes API Server front-end architecture, configuration, testing, packaging, and GitHub workflow notes are in [docs/hermes.md](docs/hermes.md).
 
 ---
 

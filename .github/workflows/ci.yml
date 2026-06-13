@@ -54,7 +54,7 @@ jobs:
           else
             BASE="HEAD~1...HEAD"
           fi
-          FILES=$(git diff --name-only "$BASE" -- '*.py' 'backend/**/*.py' 2>/dev/null || find backend -name '*.py' -print)
+          FILES=$(git diff --name-only --diff-filter=ACMRT "$BASE" -- '*.py' 'backend/**/*.py' 2>/dev/null || find backend -name '*.py' -print)
           echo "files<<EOF" >> $GITHUB_OUTPUT
           echo "$FILES" >> $GITHUB_OUTPUT
           echo "EOF" >> $GITHUB_OUTPUT
@@ -97,7 +97,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Build Docker image
-        run: docker build -t chatraw-hermes:test .
+        run: docker build -t chatraw-hermes-api-server:test .
 
       - name: Smoke test
-        run: docker run --rm chatraw-hermes:test python -c "print('Docker OK')"
+        run: docker run --rm chatraw-hermes-api-server:test python -c "print('Docker OK')"

@@ -153,10 +153,7 @@ HERMES_DEFAULT_TIMEOUT_SECONDS = _env_float("HERMES_HTTP_TIMEOUT", 300)
 HERMES_CHAT_TIMEOUT_SECONDS = _env_float("HERMES_CHAT_TIMEOUT", HERMES_DEFAULT_TIMEOUT_SECONDS)
 HERMES_RUN_CREATE_TIMEOUT_SECONDS = _env_float("HERMES_RUN_CREATE_TIMEOUT", 60)
 HERMES_RUN_STOP_TIMEOUT_SECONDS = _env_float("HERMES_RUN_STOP_TIMEOUT", 30)
-HERMES_RUN_EVENT_TIMEOUT_SECONDS = _env_float(
-    "HERMES_RUN_EVENT_TIMEOUT",
-    _env_float("HERMES_BRIDGE_TIMEOUT", 1800),
-)
+HERMES_RUN_EVENT_TIMEOUT_SECONDS = _env_float("HERMES_RUN_EVENT_TIMEOUT", 1800)
 HERMES_RUN_CONNECT_TIMEOUT_SECONDS = _env_float("HERMES_RUN_CONNECT_TIMEOUT", 10)
 
 def _create_ssl_context() -> ssl.SSLContext:
@@ -3973,6 +3970,7 @@ HERMES_DEFAULT_BASE_URL = "http://127.0.0.1:8642/v1"
 HERMES_DEFAULT_MODEL = "hermes-agent"
 HERMES_API_MODE_CHAT_COMPLETIONS = "chat_completions"
 HERMES_API_MODE_RUNS = "runs"
+HERMES_DEFAULT_API_MODE = HERMES_API_MODE_RUNS
 HERMES_API_MODES = {HERMES_API_MODE_CHAT_COMPLETIONS, HERMES_API_MODE_RUNS}
 HERMES_REMOTE_URLS_MAX_LENGTH = 4000
 HERMES_REMOTE_URL_MAX_LENGTH = 300
@@ -4169,11 +4167,11 @@ def validate_hermes_request_origin(request: Request):
         request_key = _origin_key(str(request.url))
         if referer_key and request_key and referer_key == request_key:
             return
-        raise HTTPException(status_code=403, detail="Missing Origin for Hermes bridge")
+        raise HTTPException(status_code=403, detail="Missing Origin for Hermes API Server bridge")
 
     origin_key = _origin_key(origin)
     if not origin_key:
-        raise HTTPException(status_code=403, detail="Invalid Origin for Hermes bridge")
+        raise HTTPException(status_code=403, detail="Invalid Origin for Hermes API Server bridge")
 
     request_key = _origin_key(str(request.url))
     if request_key and origin_key == request_key:
@@ -4186,7 +4184,7 @@ def validate_hermes_request_origin(request: Request):
             if origin_key == _origin_key(allowed_origin):
                 return
 
-    raise HTTPException(status_code=403, detail="Cross-origin Hermes bridge requests are not allowed")
+    raise HTTPException(status_code=403, detail="Cross-origin Hermes API Server bridge requests are not allowed")
 
 
 def _normalize_hermes_path(path: str) -> str:
@@ -4338,9 +4336,9 @@ def get_hermes_config(require_enabled: bool = True) -> dict:
     model = settings.get("model") or HERMES_DEFAULT_MODEL
     if not isinstance(model, str) or not model.strip():
         model = HERMES_DEFAULT_MODEL
-    api_mode = settings.get("apiMode", HERMES_API_MODE_CHAT_COMPLETIONS)
+    api_mode = settings.get("apiMode", HERMES_DEFAULT_API_MODE)
     if api_mode is None:
-        api_mode = HERMES_API_MODE_CHAT_COMPLETIONS
+        api_mode = HERMES_DEFAULT_API_MODE
     if not isinstance(api_mode, str) or api_mode not in HERMES_API_MODES:
         raise HermesBridgeError("Unsupported Hermes API mode")
 
@@ -4561,6 +4559,20 @@ def upsert_hermes_tool_event(tool_events: List[dict], tool_event: dict) -> None:
     tool_events.append(tool_event)
 
 
+def _append_hermes_text_delta(existing: str, incoming: str) -> Tuple[str, str]:
+    incoming = incoming or ""
+    if not incoming:
+        return existing, ""
+    if not existing:
+        return incoming, incoming
+    if incoming.startswith(existing):
+        suffix = incoming[len(existing):]
+        return existing + suffix, suffix
+    if existing.endswith(incoming):
+        return existing, ""
+    return existing + incoming, incoming
+
+
 def normalize_hermes_run_event(event: dict) -> dict:
     if not isinstance(event, dict):
         return {}
@@ -4729,8 +4741,8 @@ async def _consume_hermes_run(submission: dict, config: dict, request: Request, 
 
             thinking = event.get("thinking_delta") or ""
             if thinking:
-                full_thinking += thinking
-                if stream:
+                full_thinking, thinking = _append_hermes_text_delta(full_thinking, thinking)
+                if stream and thinking:
                     yield json.dumps({"thinking": thinking})
 
             tool_event = event.get("tool_event")
@@ -4741,8 +4753,8 @@ async def _consume_hermes_run(submission: dict, config: dict, request: Request, 
 
             content = event.get("content_delta") or ""
             if content:
-                full_response += content
-                if stream:
+                full_response, content = _append_hermes_text_delta(full_response, content)
+                if stream and content:
                     yield json.dumps({"content": content})
 
             if event.get("error"):
