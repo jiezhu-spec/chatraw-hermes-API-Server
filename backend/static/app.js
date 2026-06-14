@@ -182,7 +182,7 @@ const i18n = {
         enterApiKey: 'Enter API Key',
         apiKeySet: 'API Key is already set. Clear and enter new key to change.',
         onlyZipSupported: 'Only .zip files are supported',
-        hermesRun: 'Hermes Run',
+        hermesRun: 'Tool Activity',
         hermesRunStatusStarted: 'Started',
         hermesRunStatusRunning: 'Running',
         hermesRunStatusPendingApproval: 'Pending approval',
@@ -344,7 +344,7 @@ const i18n = {
         enterApiKey: '输入 API Key',
         apiKeySet: 'API Key 已设置。清空后输入新密钥可更改。',
         onlyZipSupported: '仅支持 .zip 文件',
-        hermesRun: 'Hermes Run',
+        hermesRun: '工具活动',
         hermesRunStatusStarted: '已开始',
         hermesRunStatusRunning: '运行中',
         hermesRunStatusPendingApproval: '等待审批',
@@ -800,7 +800,8 @@ function app() {
             try {
                 const res = await fetch(`/api/chats/${chatId}/messages`);
                 if (res.ok) {
-                    this.messages = await res.json() || [];
+                    const loadedMessages = await res.json() || [];
+                    this.messages = loadedMessages.map(message => this.hydrateToolActivityMessage(message, chatId));
                     this.$nextTick(() => this.scrollToBottom());
                 }
             } catch (e) {
@@ -1708,6 +1709,133 @@ function app() {
             return message.hermesRun;
         },
 
+        truncateHermesToolText(value, limit = 1200) {
+            const text = String(value || '').trim();
+            if (!text) return '';
+            const safeLimit = Math.max(1, Number(limit) || 1200);
+            return text.length > safeLimit ? `${text.slice(0, safeLimit)}...` : text;
+        },
+
+        stringifyHermesToolValue(value) {
+            if (value === undefined || value === null || value === '') return '';
+            if (typeof value === 'string') return value;
+            if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+            try {
+                return JSON.stringify(value, null, 2);
+            } catch (_) {
+                return String(value);
+            }
+        },
+
+        extractHermesToolText(value) {
+            if (value === undefined || value === null || value === '') return '';
+            if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
+                return String(value);
+            }
+            if (Array.isArray(value)) {
+                return value.map(item => this.extractHermesToolText(item)).filter(Boolean).join('\n');
+            }
+            if (typeof value === 'object') {
+                for (const key of ['output', 'text', 'content', 'message', 'summary', 'stdout']) {
+                    const text = this.extractHermesToolText(value[key]);
+                    if (text) return text;
+                }
+            }
+            return this.stringifyHermesToolValue(value);
+        },
+
+        buildHermesToolPreview(toolCall) {
+            if (!toolCall || typeof toolCall !== 'object') return '';
+
+            const parts = [];
+            const label = this.extractHermesToolText(toolCall.label || toolCall.context || toolCall.message || toolCall.summary);
+            const args = this.extractHermesToolText(toolCall.args || toolCall.arguments || toolCall.input);
+            const result = this.extractHermesToolText(toolCall.result || toolCall.output || toolCall.content);
+            const raw = toolCall.raw && typeof toolCall.raw === 'object' ? toolCall.raw : {};
+            const rawPreview = this.extractHermesToolText(raw.preview || raw.command || raw.message || raw.input);
+
+            for (const value of [label, args, result, rawPreview]) {
+                const text = this.truncateHermesToolText(value, 800);
+                if (text && !parts.includes(text)) {
+                    parts.push(text);
+                }
+            }
+
+            return this.truncateHermesToolText(parts.join('\n'), 1200);
+        },
+
+        hermesToolCallDuration(toolCall) {
+            const raw = toolCall?.raw && typeof toolCall.raw === 'object' ? toolCall.raw : {};
+            const candidates = [
+                toolCall?.duration_ms,
+                toolCall?.durationMs,
+                raw.duration_ms,
+                raw.durationMs
+            ];
+            for (const value of candidates) {
+                const numeric = Number(value);
+                if (Number.isFinite(numeric)) return Math.round(numeric);
+            }
+
+            const duration = Number(toolCall?.duration ?? raw.duration);
+            if (Number.isFinite(duration)) {
+                return Math.round(duration < 1000 ? duration * 1000 : duration);
+            }
+            return null;
+        },
+
+        toolCallToHermesRunEvent(toolCall, index = 0) {
+            if (!toolCall || typeof toolCall !== 'object' || Array.isArray(toolCall)) return null;
+
+            const raw = toolCall.raw && typeof toolCall.raw === 'object' ? toolCall.raw : {};
+            const phase = String(toolCall.phase || raw.phase || '').toLowerCase();
+            const rawStatus = String(toolCall.status || raw.status || '').toLowerCase();
+            const failed = phase.includes('error') || phase.includes('fail') || rawStatus.includes('error') || rawStatus.includes('fail') || Boolean(toolCall.error || raw.error);
+            const completed = failed || phase.includes('complete') || phase.includes('done') || phase.includes('end') || rawStatus.includes('complete') || rawStatus.includes('success');
+            const event = {
+                type: completed ? 'tool.completed' : 'tool.started',
+                status: failed ? 'failed' : (completed ? 'completed' : (phase.includes('progress') || rawStatus.includes('running') ? 'running' : 'started')),
+                tool: String(toolCall.name || toolCall.tool || toolCall.tool_name || raw.name || raw.tool_name || 'tool'),
+                preview: this.buildHermesToolPreview(toolCall),
+                _id: `persisted-tool-${toolCall.id || raw.id || index}`
+            };
+
+            const duration = this.hermesToolCallDuration(toolCall);
+            if (duration !== null) event.duration_ms = duration;
+            const error = this.extractHermesToolText(toolCall.error || raw.error);
+            if (error) event.error = this.truncateHermesToolText(error, 600);
+            const runId = String(toolCall.run_id || toolCall.runId || raw.run_id || raw.runId || '');
+            if (runId) event.run_id = runId;
+            return event;
+        },
+
+        hydrateToolActivityMessage(message, chatId = '') {
+            if (!message || typeof message !== 'object') return message;
+
+            const toolCalls = Array.isArray(message.toolCalls)
+                ? message.toolCalls
+                : (Array.isArray(message.tool_calls) ? message.tool_calls : []);
+            const existingEvents = Array.isArray(message.hermesRun?.events) ? message.hermesRun.events : [];
+            if (!toolCalls.length || existingEvents.length) {
+                if (message.hermesRun && !message.hermesRun.chatId) {
+                    message.hermesRun.chatId = chatId || message.chat_id || this.currentChatId || '';
+                }
+                return message;
+            }
+
+            const events = toolCalls
+                .map((toolCall, index) => this.toolCallToHermesRunEvent(toolCall, index))
+                .filter(Boolean);
+            if (!events.length) return message;
+
+            message.hermesRun = {
+                ...this.createHermesRunState(chatId || message.chat_id || this.currentChatId || ''),
+                status: events.some(event => event.status === 'failed') ? 'failed' : 'completed',
+                events
+            };
+            return message;
+        },
+
         normalizeHermesRunEvent(event) {
             if (!event || typeof event !== 'object' || Array.isArray(event)) {
                 return null;
@@ -2114,12 +2242,14 @@ function app() {
                 this.currentChatId = data.chat_id;
             }
             
-            this.messages.push({
+            const assistantMessage = this.hydrateToolActivityMessage({
                 role: 'assistant',
                 content: data.content,
                 thinking: data.thinking || '',
-                references: data.references || []
-            });
+                references: data.references || [],
+                toolCalls: Array.isArray(data.tools) ? data.tools : []
+            }, data.chat_id || this.currentChatId || '');
+            this.messages.push(assistantMessage);
             this.$nextTick(() => this.scrollToBottom());
         },
         
