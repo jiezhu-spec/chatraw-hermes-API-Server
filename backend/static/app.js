@@ -67,6 +67,10 @@ const i18n = {
         thinkingMode: 'Thinking Mode',
         thinkingEnabled: 'Thinking Enabled',
         thinkingProcess: 'Thinking Process',
+        working: 'Working...',
+        toolExecution: 'Tool execution',
+        toolCall: 'call',
+        toolCalls: 'calls',
         uploadImage: 'Upload Image',
         uploadDocument: 'Upload Document',
         image: 'Image',
@@ -229,6 +233,10 @@ const i18n = {
         thinkingMode: '思考模式',
         thinkingEnabled: '思考模式已开启',
         thinkingProcess: '思考过程',
+        working: '执行中...',
+        toolExecution: '工具执行',
+        toolCall: '次调用',
+        toolCalls: '次调用',
         uploadImage: '上传图片',
         uploadDocument: '上传文档',
         image: '图片',
@@ -1810,21 +1818,89 @@ function app() {
             return event;
         },
 
+        normalizeToolCall(raw, fallbackIndex = 0) {
+            if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+
+            const nestedRaw = raw.raw && typeof raw.raw === 'object' ? raw.raw : {};
+            const toolObject = raw.tool && typeof raw.tool === 'object' ? raw.tool : {};
+            const rawToolObject = nestedRaw.tool && typeof nestedRaw.tool === 'object' ? nestedRaw.tool : {};
+            const phaseText = String(raw.phase || raw.type || raw.status || nestedRaw.phase || nestedRaw.event || nestedRaw.type || nestedRaw.status || '').toLowerCase();
+            const isComplete = phaseText.includes('complete') || phaseText.includes('success') || phaseText.includes('done') || phaseText.includes('end');
+            const isError = phaseText.includes('error') || phaseText.includes('fail') || phaseText.includes('cancel');
+            const name = String(
+                raw.name ||
+                raw.tool_name ||
+                raw.function_name ||
+                toolObject.name ||
+                nestedRaw.name ||
+                nestedRaw.tool_name ||
+                rawToolObject.name ||
+                (typeof raw.tool === 'string' ? raw.tool : '') ||
+                (typeof nestedRaw.tool === 'string' ? nestedRaw.tool : '') ||
+                'tool'
+            );
+            const runId = String(raw.run_id || raw.runId || nestedRaw.run_id || nestedRaw.runId || '');
+            const id = String(
+                raw.id ||
+                raw.tool_id ||
+                raw.call_id ||
+                toolObject.id ||
+                nestedRaw.id ||
+                nestedRaw.tool_id ||
+                nestedRaw.call_id ||
+                rawToolObject.id ||
+                (runId ? `${runId}:${name}` : `${name}-${fallbackIndex}`)
+            );
+            const label = raw.label || raw.context || raw.message || raw.summary || raw.preview || nestedRaw.preview || nestedRaw.command || nestedRaw.message || '';
+            const args = raw.args ?? raw.arguments ?? raw.input ?? toolObject.args ?? toolObject.arguments ?? nestedRaw.args ?? nestedRaw.arguments ?? nestedRaw.input;
+            const result = raw.result ?? raw.output ?? raw.content ?? toolObject.result ?? toolObject.output ?? nestedRaw.result ?? nestedRaw.output ?? nestedRaw.content;
+
+            return {
+                ...raw,
+                id,
+                name,
+                phase: isError ? 'error' : (isComplete ? 'complete' : (phaseText.includes('progress') || phaseText.includes('running') ? 'progress' : 'start')),
+                label,
+                summary: raw.summary || '',
+                args,
+                result
+            };
+        },
+
+        upsertToolCall(message, tool) {
+            if (!message || !tool) return;
+            const calls = Array.isArray(message.toolCalls) ? [...message.toolCalls] : [];
+            const normalized = this.normalizeToolCall(tool, calls.length);
+            if (!normalized) return;
+
+            const idx = calls.findIndex(item => String(item.id || '') === normalized.id && normalized.id);
+            if (idx >= 0) {
+                calls[idx] = { ...calls[idx], ...normalized };
+            } else {
+                calls.push(normalized);
+            }
+            message.toolCalls = calls;
+        },
+
         hydrateToolActivityMessage(message, chatId = '') {
             if (!message || typeof message !== 'object') return message;
 
-            const toolCalls = Array.isArray(message.toolCalls)
+            const rawToolCalls = Array.isArray(message.toolCalls)
                 ? message.toolCalls
                 : (Array.isArray(message.tool_calls) ? message.tool_calls : []);
+            message.toolCalls = [];
+            for (const toolCall of rawToolCalls) {
+                this.upsertToolCall(message, toolCall);
+            }
             const existingEvents = Array.isArray(message.hermesRun?.events) ? message.hermesRun.events : [];
-            if (!toolCalls.length || existingEvents.length) {
+            if (!message.toolCalls.length || existingEvents.length) {
                 if (message.hermesRun && !message.hermesRun.chatId) {
                     message.hermesRun.chatId = chatId || message.chat_id || this.currentChatId || '';
                 }
                 return message;
             }
 
-            const events = toolCalls
+            const events = message.toolCalls
                 .map((toolCall, index) => this.toolCallToHermesRunEvent(toolCall, index))
                 .filter(Boolean);
             if (!events.length) return message;
@@ -1988,6 +2064,9 @@ function app() {
                 events: [...message.hermesRun.events],
                 pendingApproval: message.hermesRun.pendingApproval ? { ...message.hermesRun.pendingApproval } : null
             };
+            if (message.toolCalls) {
+                message.toolCalls = [...message.toolCalls];
+            }
             if (msgIndex >= 0) {
                 this.messages[msgIndex] = { ...message };
             }
@@ -2048,6 +2127,48 @@ function app() {
                 [`hermes-event-${typeClass}`]: true,
                 [`status-${statusClass}`]: Boolean(statusClass)
             };
+        },
+
+        isLiveToolMessage(index) {
+            return this.isGenerating && index === this.messages.length - 1;
+        },
+
+        shouldShowToolRows(msg, index) {
+            return Boolean(msg?.toolCalls?.length) && (this.isLiveToolMessage(index) || msg.showTools);
+        },
+
+        toolIconClass(tool) {
+            const phase = String(tool?.phase || '').toLowerCase();
+            if (phase === 'complete') return 'ri-check-line';
+            if (phase === 'error') return 'ri-error-warning-line';
+            return 'ri-loader-4-line spin';
+        },
+
+        toolPhaseClass(tool) {
+            const phase = String(tool?.phase || '').toLowerCase();
+            if (phase === 'complete') return 'complete';
+            if (phase === 'error') return 'error';
+            return 'running';
+        },
+
+        formatToolSummary(tool) {
+            const value = tool?.summary || tool?.label || tool?.context || tool?.message || '';
+            if (!value && tool?.args !== undefined) {
+                return this.formatToolValue(tool.args, 120);
+            }
+            return this.formatToolValue(value, 160);
+        },
+
+        formatToolValue(value, limit = 500) {
+            if (value === undefined || value === null || value === '') return '';
+            const text = typeof value === 'string' ? value : JSON.stringify(value, null, 2);
+            return text.length > limit ? text.slice(0, limit) + '...' : text;
+        },
+
+        toolCallsCountLabel(msg) {
+            const count = msg?.toolCalls?.length || 0;
+            const unit = count === 1 ? this.t('toolCall') : this.t('toolCalls');
+            return `${count} ${unit}`;
         },
 
         formatHermesDuration(ms) {
@@ -2138,7 +2259,9 @@ function app() {
                 content: '',
                 thinking: '',
                 references: [],
+                toolCalls: [],
                 showThinking: false,
+                showTools: false,
                 hermesRun: this.createHermesRunState()
             };
             this.messages.push(assistantMsg);
@@ -2175,6 +2298,14 @@ function app() {
 
                             if (parsed.hermes_run) {
                                 this.applyHermesRunEvent(assistantMsg, parsed.hermes_run, msgIndex);
+                            }
+
+                            if (parsed.tool) {
+                                this.upsertToolCall(assistantMsg, parsed.tool);
+                                const currentShowThinking = this.messages[msgIndex]?.showThinking || false;
+                                assistantMsg.showThinking = currentShowThinking;
+                                this.messages[msgIndex] = { ...assistantMsg, toolCalls: [...(assistantMsg.toolCalls || [])] };
+                                this.$nextTick(() => this.scrollToBottom());
                             }
                             
                             // Handle thinking/reasoning content

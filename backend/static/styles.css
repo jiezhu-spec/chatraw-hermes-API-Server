@@ -626,6 +626,147 @@ select:focus:not(:focus-visible),
     color: var(--text-primary);
 }
 
+/* Tool Activity */
+.tool-activity {
+    margin-bottom: 16px;
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-md);
+    background: var(--bg-secondary);
+    overflow: hidden;
+}
+
+.tool-activity.live {
+    max-width: 680px;
+}
+
+.tool-activity-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    cursor: pointer;
+    font-size: 0.85rem;
+    color: var(--text-secondary);
+    padding: 10px 14px;
+    background: var(--bg-hover);
+    transition: var(--transition);
+    user-select: none;
+}
+
+.tool-activity.live .tool-activity-header,
+.hermes-approval-activity .tool-activity-header {
+    cursor: default;
+}
+
+.tool-activity-header:hover {
+    background: var(--border-color);
+}
+
+.tool-activity.live .tool-activity-header:hover,
+.hermes-approval-activity .tool-activity-header:hover {
+    background: var(--bg-hover);
+}
+
+.tool-activity-header i {
+    flex-shrink: 0;
+    color: var(--text-muted);
+}
+
+.tool-activity-header .chevron {
+    margin-left: 0;
+    transition: transform 0.2s ease;
+}
+
+.tool-activity-header .chevron.expanded {
+    transform: rotate(180deg);
+}
+
+.tool-activity-count {
+    margin-left: auto;
+    font-size: 0.72rem;
+    color: var(--text-muted);
+}
+
+.tool-activity-list {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 10px 14px 12px;
+    border-top: 1px solid var(--border-color);
+    background: var(--bg-primary);
+}
+
+.tool-activity-row {
+    display: grid;
+    grid-template-columns: 16px max-content minmax(0, 1fr);
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+    color: var(--text-secondary);
+    font-size: 0.78rem;
+}
+
+.tool-activity-row i {
+    color: var(--text-muted);
+    font-size: 13px;
+}
+
+.tool-activity-row.complete i {
+    color: var(--success-color);
+}
+
+.tool-activity-row.error i {
+    color: var(--error-color);
+}
+
+.tool-activity-name {
+    min-width: 0;
+    max-width: 180px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-weight: 600;
+    color: var(--text-primary);
+}
+
+.tool-activity-summary {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--text-secondary);
+}
+
+.tool-activity-detail {
+    grid-column: 2 / -1;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    min-width: 0;
+}
+
+.tool-activity-detail pre,
+.hermes-approval-summary pre {
+    max-height: 180px;
+    overflow: auto;
+    margin: 2px 0 0;
+    padding: 8px 10px;
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-sm);
+    background: var(--bg-tertiary);
+    color: var(--text-secondary);
+    font-family: var(--font-mono);
+    font-size: 12px;
+    line-height: 1.5;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
+.hermes-approval-summary {
+    color: var(--text-secondary);
+    font-size: 0.85rem;
+    line-height: 1.5;
+}
+
 /* Hermes Runs */
 .hermes-run-block {
     margin: 0 0 16px;
