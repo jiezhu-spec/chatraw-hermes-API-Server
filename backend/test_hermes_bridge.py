@@ -140,6 +140,7 @@ class HermesBridgeTests(unittest.IsolatedAsyncioTestCase):
             cursor.execute(f"DELETE FROM {table}")
         conn.commit()
         main._context_compaction_locks.clear()
+        main._active_hermes_runs.clear()
 
         self.original_cors_origins = main.CORS_ORIGINS
         self.addCleanup(lambda: setattr(main, "CORS_ORIGINS", self.original_cors_origins))
@@ -893,7 +894,9 @@ class HermesBridgeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(failed["error"], "boom")
         approval = main.normalize_hermes_run_event({"type": "run.requires_action"})
         self.assertTrue(approval["approval_required"])
-        self.assertIn("approval", approval["error"])
+        self.assertFalse(approval["terminal"])
+        self.assertEqual(approval["hermes_run"]["type"], "approval.request")
+        self.assertIn("once", approval["hermes_run"]["choices"])
         approval_tool = main.normalize_hermes_run_event({
             "type": "tool.complete",
             "name": "approval",
@@ -924,6 +927,27 @@ class HermesBridgeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(tool_events[0]["label"], "date")
         self.assertEqual(tool_events[0]["args"], "date")
         self.assertEqual(tool_events[0]["result"]["output"], "Sat Jun 13")
+
+    def test_hermes_text_delta_drops_snapshot_repeats_and_overlaps(self):
+        existing, delta = main._append_hermes_text_delta("abc def", "abc def")
+        self.assertEqual(existing, "abc def")
+        self.assertEqual(delta, "")
+
+        existing, delta = main._append_hermes_text_delta("intro\n\nresult table", "result table")
+        self.assertEqual(existing, "intro\n\nresult table")
+        self.assertEqual(delta, "")
+
+        existing, delta = main._append_hermes_text_delta("我来通过 SSH登录到服务器", "我来通过 SSH 登录到服务器")
+        self.assertEqual(existing, "我来通过 SSH登录到服务器")
+        self.assertEqual(delta, "")
+
+        existing, delta = main._append_hermes_text_delta("abcdefghijklmnop", "ijklmnopqrstuvwxyz")
+        self.assertEqual(existing, "abcdefghijklmnopqrstuvwxyz")
+        self.assertEqual(delta, "qrstuvwxyz")
+
+        existing, delta = main._append_hermes_text_delta("10.9", "以下是目录")
+        self.assertEqual(existing, "10.9以下是目录")
+        self.assertEqual(delta, "以下是目录")
 
     def test_duplicate_visible_thinking_is_stripped_conservatively(self):
         content = "我来展示一下能力。\n\n以上就是我的完整能力列表。"
@@ -963,18 +987,33 @@ class HermesBridgeTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('"chat_id"', stream_chunks[0])
         self.assertEqual(fake_session.posts[0]["url"], "http://127.0.0.1:8642/v1/runs")
         self.assertEqual(fake_session.gets[0]["url"], "http://127.0.0.1:8642/v1/runs/run-1/events")
-        self.assertEqual(fake_session.posts[0]["json"]["model"], "hermes-agent")
-        self.assertNotIn("stream", fake_session.posts[0]["json"])
+        run_payload = fake_session.posts[0]["json"]
+        self.assertEqual(run_payload["model"], "hermes-agent")
+        self.assertEqual(run_payload["input"], "run please")
+        self.assertEqual(run_payload["instructions"], "Base system prompt.")
+        self.assertNotIn("messages", run_payload)
+        self.assertNotIn("stream", run_payload)
         self.assertTrue(any('"content": "Hello "' in chunk for chunk in stream_chunks))
         self.assertTrue(any('"content": "world"' in chunk for chunk in stream_chunks))
         self.assertTrue(any('"thinking": "Plan"' in chunk for chunk in stream_chunks))
-        tool_chunks = [json.loads(chunk)["tool"] for chunk in stream_chunks if '"tool"' in chunk]
+        tool_chunks = [
+            parsed["tool"]
+            for parsed in (json.loads(chunk) for chunk in stream_chunks)
+            if "tool" in parsed
+        ]
         self.assertEqual(tool_chunks[0]["phase"], "progress")
         self.assertEqual(tool_chunks[0]["name"], "terminal")
         self.assertEqual(tool_chunks[0]["id"], "call-1")
         self.assertEqual(tool_chunks[0]["label"], "date")
         self.assertEqual(tool_chunks[1]["phase"], "complete")
         self.assertEqual(tool_chunks[1]["result"]["output"], "Sat Jun 13")
+        hermes_run_chunks = [
+            parsed["hermes_run"]
+            for parsed in (json.loads(chunk) for chunk in stream_chunks)
+            if "hermes_run" in parsed
+        ]
+        self.assertTrue(any(event["type"] == "tool.started" for event in hermes_run_chunks))
+        self.assertTrue(any(event["type"] == "run.completed" for event in hermes_run_chunks))
         self.assertTrue(any('"done": true' in chunk for chunk in stream_chunks))
 
         chat_id = json.loads(stream_chunks[0])["chat_id"]
@@ -995,6 +1034,38 @@ class HermesBridgeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(api_messages[1]["thinking"], "Plan")
         self.assertEqual(len(api_messages[1]["toolCalls"]), 1)
         self.assertEqual(api_messages[1]["toolCalls"][0]["name"], "terminal")
+
+    async def test_hermes_runs_payload_uses_input_and_conversation_history(self):
+        self.enable_hermes(api_mode=main.HERMES_API_MODE_RUNS)
+        self.configure_chat(stream=False, system_prompt="Run system prompt.")
+        chat = main.db.create_chat("Existing")
+        main.db.add_message(chat.id, "user", "previous question")
+        main.db.add_message(chat.id, "assistant", "previous answer")
+        fake_session = self.patch_session(FakeHermesSession(
+            post_responses=[FakeHermesResponse(json_data={"run_id": "run-history"})],
+            get_response=FakeHermesResponse(stream_chunks=[
+                b'data: {"delta":"done"}\n\n',
+                b'event: run.completed\ndata: {}\n\n',
+            ]),
+        ))
+
+        result = await main.hermes_chat(JsonRequest({
+            "chat_id": chat.id,
+            "message": "next run",
+        }))
+        status, data = self.decode_result(result)
+
+        self.assertEqual(status, 200)
+        self.assertEqual(data["content"], "done")
+        run_payload = fake_session.posts[0]["json"]
+        self.assertEqual(run_payload["input"], "next run")
+        self.assertEqual(run_payload["instructions"], "Run system prompt.")
+        self.assertEqual(run_payload["conversation_history"], [
+            {"role": "user", "content": "previous question"},
+            {"role": "assistant", "content": "previous answer"},
+        ])
+        self.assertNotIn("messages", run_payload)
+        self.assertNotIn("stream", run_payload)
 
     async def test_hermes_runs_event_timeout_uses_configured_value(self):
         self.enable_hermes(api_mode=main.HERMES_API_MODE_RUNS)
@@ -1178,24 +1249,69 @@ class HermesBridgeTests(unittest.IsolatedAsyncioTestCase):
         finally:
             shutil.rmtree(tmpdir, ignore_errors=True)
 
-    async def test_hermes_runs_approval_returns_clear_error_without_final_content(self):
+    async def test_hermes_runs_approval_request_streams_without_stop_and_saves_final_content(self):
         self.enable_hermes(api_mode=main.HERMES_API_MODE_RUNS)
         self.configure_chat(stream=True)
         fake_session = self.patch_session(FakeHermesSession(
-            post_responses=[
-                FakeHermesResponse(json_data={"run_id": "run-approval"}),
-                FakeHermesResponse(json_data={"stopped": True}),
-            ],
-            get_response=FakeHermesResponse(stream_chunks=[b'event: run.requires_action\ndata: {}\n\n']),
+            post_responses=[FakeHermesResponse(json_data={"run_id": "run-approval"})],
+            get_response=FakeHermesResponse(stream_chunks=[
+                b'event: run.requires_action\ndata: {"command":"ls /home/rm01","message":"Need terminal access"}\n\n',
+                b'event: approval.responded\ndata: {"choice":"once"}\n\n',
+                b'data: {"delta":"approved result"}\n\n',
+                b'event: run.completed\ndata: {}\n\n',
+            ]),
         ))
 
         response = await main.hermes_chat(JsonRequest({"message": "needs approval"}))
         stream_chunks = await self.collect_stream(response)
         chat_id = json.loads(stream_chunks[0])["chat_id"]
 
-        self.assertTrue(any("requires approval" in chunk for chunk in stream_chunks))
-        self.assertEqual(len(main.db.get_messages(chat_id)), 1)
-        self.assertEqual(fake_session.posts[1]["url"], "http://127.0.0.1:8642/v1/runs/run-approval/stop")
+        hermes_run_chunks = [
+            parsed["hermes_run"]
+            for parsed in (json.loads(chunk) for chunk in stream_chunks)
+            if "hermes_run" in parsed
+        ]
+        self.assertTrue(any(event["type"] == "approval.request" for event in hermes_run_chunks))
+        self.assertTrue(any(event["type"] == "approval.responded" for event in hermes_run_chunks))
+        self.assertEqual(len(fake_session.posts), 1)
+        self.assertEqual(main.db.get_messages(chat_id)[1].content, "approved result")
+        self.assertNotIn("run-approval", main._active_hermes_runs)
+
+    async def test_hermes_approval_endpoint_forwards_using_registry_config_snapshot(self):
+        self.enable_hermes(api_mode=main.HERMES_API_MODE_RUNS)
+        snapshot_config = {
+            "base_url": "http://127.0.0.1:8642/v1",
+            "model": "hermes-agent",
+            "api_key": "secret",
+            "session_key": "session-secret",
+            "api_mode": main.HERMES_API_MODE_RUNS,
+        }
+        main.register_active_hermes_run("run-approval", "chat-approval", snapshot_config)
+        main.update_active_hermes_run(
+            "run-approval",
+            status="pending_approval",
+            pending_approval={"type": "approval.request", "run_id": "run-approval"},
+        )
+        fake_session = self.patch_session(FakeHermesSession(
+            post_responses=[FakeHermesResponse(json_data={"status": "running"})],
+        ))
+
+        result = await main.hermes_run_approval(
+            "run-approval",
+            JsonRequest(
+                {"chat_id": "chat-approval", "choice": "once", "resolve_all": False},
+                url="http://testserver/api/hermes/runs/run-approval/approval",
+            ),
+        )
+
+        self.assertEqual(result["success"], True)
+        self.assertEqual(fake_session.posts[0]["url"], "http://127.0.0.1:8642/v1/runs/run-approval/approval")
+        self.assertEqual(fake_session.posts[0]["json"], {"choice": "once", "resolve_all": False})
+        self.assertEqual(fake_session.posts[0]["headers"]["Authorization"], "Bearer secret")
+        self.assertEqual(fake_session.posts[0]["headers"]["X-Hermes-Session-Key"], "session-secret")
+        active = main.get_active_hermes_run("run-approval")
+        self.assertEqual(active["status"], "running")
+        self.assertIsNone(active["pending_approval"])
 
     async def test_hermes_runs_events_error_stops_run(self):
         self.enable_hermes(api_mode=main.HERMES_API_MODE_RUNS)

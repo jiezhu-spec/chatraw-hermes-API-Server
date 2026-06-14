@@ -16,8 +16,8 @@
     
     <!-- Performance: Preload Critical Resources -->
     <link rel="preload" href="fonts/remixicon/remixicon.woff2?t=1769685282643" as="font" type="font/woff2" crossorigin>
-    <link rel="preload" href="styles.min.css?v=7.5" as="style">
-    <link rel="preload" href="app.min.js?v=7.5" as="script">
+    <link rel="preload" href="styles.min.css?v=8.0" as="style">
+    <link rel="preload" href="app.min.js?v=8.0" as="script">
     <link rel="preload" href="https://unpkg.com/alpinejs@3.13.3/dist/cdn.min.js" as="script" crossorigin="anonymous">
     <link rel="preload" href="https://unpkg.com/marked@9.1.6/marked.min.js" as="script" crossorigin="anonymous">
     
@@ -147,7 +147,7 @@
     <script defer src="https://unpkg.com/alpinejs@3.13.3/dist/cdn.min.js" crossorigin="anonymous"></script>
     <!-- highlight.js is lazy-loaded in app.min.js when needed -->
     <link rel="stylesheet" href="fonts/remixicon/remixicon.css">
-    <link rel="stylesheet" href="styles.min.css?v=7.5">
+    <link rel="stylesheet" href="styles.min.css?v=8.0">
 </head>
 <body x-data="app()" x-init="init()" :data-theme="settings.ui_settings.theme_mode">
     <!-- Sidebar Overlay for Mobile -->
@@ -247,7 +247,7 @@
             </div>
 
             <!-- Messages -->
-            <div class="messages" x-show="messages.length > 0" x-ref="messagesContainer" aria-live="polite">
+            <div class="messages" x-show="true" x-ref="messagesContainer" aria-live="polite">
                 <template x-for="(msg, index) in messages" :key="index">
                     <div class="message" :class="msg.role">
                         <div class="message-avatar" :class="msg.role">
@@ -260,7 +260,7 @@
                         </div>
                         <div class="message-content">
                             <!-- Show typing indicator for empty assistant message while generating -->
-                            <div class="typing-indicator" x-show="msg.role === 'assistant' && !msg.content && isGenerating">
+                            <div class="typing-indicator" x-show="msg.role === 'assistant' && !msg.content && !(msg.toolCalls && msg.toolCalls.length) && !(msg.hermesRun && msg.hermesRun.pendingApproval) && isGenerating">
                                 <span></span><span></span><span></span>
                             </div>
                             <!-- Thinking/Reasoning Block -->
@@ -274,6 +274,57 @@
                                     <div x-html="renderMarkdown(msg.thinking)"></div>
                                 </div>
                             </div>
+
+                            <!-- Tool Activity Block -->
+                            <div class="tool-activity" x-show="msg.role === 'assistant' && msg.toolCalls && msg.toolCalls.length > 0" :class="{ 'live': isLiveToolMessage(index) }">
+                                <div class="tool-activity-header" @click="!isLiveToolMessage(index) && (msg.showTools = !msg.showTools)" role="button" :aria-expanded="shouldShowToolRows(msg, index)">
+                                    <i class="ri-tools-line"></i>
+                                    <span x-text="isLiveToolMessage(index) ? t('working') : t('toolExecution')"></span>
+                                    <span class="tool-activity-count" x-text="toolCallsCountLabel(msg)"></span>
+                                    <i class="ri-arrow-down-s-line chevron" x-show="!isLiveToolMessage(index)" :class="{ 'expanded': msg.showTools }"></i>
+                                </div>
+                                <div class="tool-activity-list" x-show="shouldShowToolRows(msg, index)" x-collapse>
+                                    <template x-for="(tool, toolIdx) in msg.toolCalls" :key="(tool.id || tool.name || 'tool') + '-' + toolIdx">
+                                        <div class="tool-activity-row" :class="toolPhaseClass(tool)">
+                                            <i :class="toolIconClass(tool)"></i>
+                                            <span class="tool-activity-name" x-text="tool.name || 'tool'"></span>
+                                            <span class="tool-activity-summary" x-text="formatToolSummary(tool)"></span>
+                                            <div class="tool-activity-detail" x-show="!isLiveToolMessage(index) && msg.showTools && (tool.args !== undefined || tool.result !== undefined)">
+                                                <pre x-show="tool.args !== undefined" x-text="formatToolValue(tool.args)"></pre>
+                                                <pre x-show="tool.result !== undefined" x-text="formatToolValue(tool.result)"></pre>
+                                            </div>
+                                        </div>
+                                    </template>
+                                </div>
+                            </div>
+
+                            <template x-if="msg.hermesRun && msg.hermesRun.pendingApproval">
+                                <div class="tool-activity hermes-approval-activity">
+                                    <div class="tool-activity-header">
+                                        <i class="ri-information-line"></i>
+                                        <span x-text="t('hermesRunEventApprovalRequest')"></span>
+                                        <span class="tool-activity-count" x-text="hermesRunStatusLabel(msg.hermesRun.status)"></span>
+                                    </div>
+                                    <div class="tool-activity-list">
+                                        <div class="hermes-approval-summary" x-show="msg.hermesRun.pendingApproval.description || msg.hermesRun.pendingApproval.command">
+                                            <span x-show="msg.hermesRun.pendingApproval.description" x-text="msg.hermesRun.pendingApproval.description"></span>
+                                            <pre x-show="msg.hermesRun.pendingApproval.command" x-text="msg.hermesRun.pendingApproval.command"></pre>
+                                        </div>
+                                        <div class="hermes-approval-actions">
+                                            <button type="button" class="hermes-approval-btn" @click="submitHermesApproval(msg, 'once', index)" :disabled="msg.hermesRun.approvalSubmitting">
+                                                <span x-text="msg.hermesRun.approvalSubmitting ? t('hermesApprovalSubmitting') : t('hermesApprovalOnce')"></span>
+                                            </button>
+                                            <button type="button" class="hermes-approval-btn" @click="submitHermesApproval(msg, 'session', index)" :disabled="msg.hermesRun.approvalSubmitting">
+                                                <span x-text="t('hermesApprovalSession')"></span>
+                                            </button>
+                                            <button type="button" class="hermes-approval-btn danger" @click="submitHermesApproval(msg, 'deny', index)" :disabled="msg.hermesRun.approvalSubmitting">
+                                                <span x-text="t('hermesApprovalDeny')"></span>
+                                            </button>
+                                        </div>
+                                        <div class="hermes-approval-error" x-show="msg.hermesRun.approvalError" x-text="msg.hermesRun.approvalError"></div>
+                                    </div>
+                                </div>
+                            </template>
                             
                             <!-- Show actual content -->
                             <div x-show="msg.content" x-html="renderMarkdown(msg.content)"></div>
@@ -987,6 +1038,6 @@
         <div class="plugin-fullscreen-content" x-html="pluginFullscreenModal.content"></div>
     </div>
 
-    <script src="app.min.js?v=7.5"></script>
+    <script src="app.min.js?v=8.0"></script>
 </body>
 </html>
