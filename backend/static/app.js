@@ -1790,7 +1790,8 @@ function app() {
             const raw = toolCall.raw && typeof toolCall.raw === 'object' ? toolCall.raw : {};
             const phase = String(toolCall.phase || raw.phase || '').toLowerCase();
             const rawStatus = String(toolCall.status || raw.status || '').toLowerCase();
-            const failed = phase.includes('error') || phase.includes('fail') || rawStatus.includes('error') || rawStatus.includes('fail') || Boolean(toolCall.error || raw.error);
+            const rawError = toolCall.error !== undefined ? toolCall.error : raw.error;
+            const failed = phase.includes('error') || phase.includes('fail') || rawStatus.includes('error') || rawStatus.includes('fail') || rawError === true || (rawError && rawError !== false);
             const completed = failed || phase.includes('complete') || phase.includes('done') || phase.includes('end') || rawStatus.includes('complete') || rawStatus.includes('success');
             const event = {
                 type: completed ? 'tool.completed' : 'tool.started',
@@ -1802,7 +1803,7 @@ function app() {
 
             const duration = this.hermesToolCallDuration(toolCall);
             if (duration !== null) event.duration_ms = duration;
-            const error = this.extractHermesToolText(toolCall.error || raw.error);
+            const error = rawError === true ? 'Error' : (rawError ? this.extractHermesToolText(rawError) : '');
             if (error) event.error = this.truncateHermesToolText(error, 600);
             const runId = String(toolCall.run_id || toolCall.runId || raw.run_id || raw.runId || '');
             if (runId) event.run_id = runId;
